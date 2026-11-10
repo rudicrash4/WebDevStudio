@@ -11,3 +11,4 @@ captures/
 # Runtime bundle besar (Node.js) disiapkan oleh CI / developer, bukan di-commit
 runtime-bundle/jniLibs/
 runtime-bundle/assets/
+__pycache__/

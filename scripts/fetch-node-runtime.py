@@ -34,6 +34,7 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -43,7 +44,7 @@ import zipfile
 REPO = "https://packages.termux.dev/apt/termux-main"
 INDEX = REPO + "/dists/stable/main/binary-aarch64/Packages"
 PREFIX = "data/data/com.termux/files/usr/"
-NPM_REGISTRY = "https://registry.npmjs.org/npm/latest"
+NPM_REGISTRY = "https://registry.npmjs.org/npm"
 
 NODE_PACKAGES = {"nodejs", "nodejs-lts", "nodejs-current"}
 
@@ -87,11 +88,12 @@ def fail(msg):
 
 
 # ----------------------------------------------------------------------------- jaringan
-def fetch(url, retries=3):
+def fetch(url, retries=3, headers=None):
     last = None
     for i in range(retries):
         try:
-            with urllib.request.urlopen(url, timeout=180) as r:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=180) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001
             last = e
@@ -231,10 +233,112 @@ def extract_deb(blob, stage):
     return paths
 
 
+# ----------------------------------------------------------------------------- semver minimal
+def _v(s):
+    m = re.match(r"^v?(\d+)(?:\.(\d+|x|X|\*))?(?:\.(\d+|x|X|\*))?(?:-.*)?$", s.strip())
+    if not m:
+        return None
+    parts = [m.group(1), m.group(2), m.group(3)]
+    return [None if (p is None or p in "xX*") else int(p) for p in parts]
+
+
+def _cmp(a, b):
+    return (a > b) - (a < b)
+
+
+def _comparators(tok):
+    """Satu token -> daftar (op, (maj,min,pat)) yang semuanya harus terpenuhi."""
+    tok = tok.strip()
+    if tok in ("", "*", "x", "X"):
+        return []
+    op = ""
+    for cand in (">=", "<=", ">", "<", "=", "^", "~"):
+        if tok.startswith(cand):
+            op, tok = cand, tok[len(cand):].strip()
+            break
+    v = _v(tok)
+    if v is None:
+        fail(f"rentang semver tidak didukung: {tok!r}")
+    maj, mi, pa = v
+    lo = (maj or 0, mi or 0, pa or 0)
+    if op in ("", "=", "^", "~"):
+        if op in ("", "=") and None not in v:
+            return [("=", lo)]
+        if op == "^" and maj and None not in v or (op == "^" and maj):
+            hi = (maj + 1, 0, 0)
+        elif op == "^" and mi:
+            hi = (0, mi + 1, 0)
+        elif op == "^":
+            hi = (0, 0, (pa or 0) + 1) if pa is not None else (0, (mi or 0) + 1, 0)
+        elif mi is None:
+            hi = (maj + 1, 0, 0)
+        else:
+            hi = (maj, mi + 1, 0)
+        if op == "" or op == "=":  # x-range seperti "24" atau "24.22"
+            hi = (maj + 1, 0, 0) if mi is None else (maj, mi + 1, 0)
+        return [(">=", lo), ("<", hi)]
+    if op == ">":
+        if pa is None:
+            return [(">=", (maj + 1, 0, 0) if mi is None else (maj, mi + 1, 0))]
+        return [(">", lo)]
+    return [(op, lo)]
+
+
+def satisfies(version, rng):
+    ver = _v(version)
+    if ver is None or "-" in version:
+        return False
+    ver = tuple(ver)
+    for alt in rng.split("||"):
+        ok = True
+        for tok in re.findall(r"(?:[<>]=?|=|\^|~)?\s*v?[\dxX*][\w.*-]*", alt.strip()) or [""]:
+            for op, bound in _comparators(tok):
+                c = _cmp(ver, bound)
+                if not {"=": c == 0, ">=": c >= 0, ">": c > 0, "<=": c <= 0, "<": c < 0}[op]:
+                    ok = False
+        if ok:
+            return True
+    return False
+
+
+# Versi npm yang dibawa rilis Node resmi untuk tiap mayor (paling kompatibel).
+def expected_npm_major(node_version):
+    major = int(node_version.split(".")[0]) if node_version else 0
+    return {18: 10, 20: 10, 21: 10, 22: 10, 23: 11, 24: 11, 25: 11}.get(major)
+
+
+# ----------------------------------------------------------------------------- smoke test npm
+def smoke_npm(npm_dir, host_node):
+    """Jalankan `node npm-cli.js --version` dengan node HOST (npm itu JS murni).
+    Mengembalikan (ok|None, detail). None = dilewati karena tidak ada node host."""
+    if not host_node:
+        return None, "node host tidak tersedia (smoke test dilewati)"
+    cli = os.path.join(npm_dir, "bin", "npm-cli.js")
+    if not os.path.isfile(cli):
+        return False, "npm-cli.js tidak ada"
+    home = tempfile.mkdtemp(prefix="npm-smoke-")
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": home, "npm_config_cache": os.path.join(home, "c"),
+           "npm_config_update_notifier": "false", "NO_COLOR": "1"}
+    try:
+        r = subprocess.run([host_node, cli, "--version"], capture_output=True, text=True, timeout=90, env=env, cwd=home)
+    except Exception as e:  # noqa: BLE001
+        return False, f"gagal menjalankan: {e}"
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    out = (r.stdout or "").strip().splitlines()
+    last = out[-1].strip() if out else ""
+    try:
+        want = json.load(open(os.path.join(npm_dir, "package.json")))["version"]
+    except Exception:  # noqa: BLE001
+        want = None
+    ok = r.returncode == 0 and re.fullmatch(r"\d+\.\d+\.\d+", last) is not None and (want is None or last == want)
+    return ok, f"exit={r.returncode} stdout={last!r} stderr={(r.stderr or '').strip()[:500]!r}"
+
+
 # ----------------------------------------------------------------------------- npm dari registry (fallback)
-def install_npm_from_registry(stage):
-    log("Mengambil npm dari registry npm (fallback)…")
-    meta = json.loads(fetch(NPM_REGISTRY).decode())
+def install_npm_version(stage, version):
+    log(f"Mengambil npm {version} dari registry npm…")
+    meta = json.loads(fetch(f"{NPM_REGISTRY}/{version}").decode())
     tarball, integ = meta["dist"]["tarball"], meta["dist"].get("integrity", "")
     blob = fetch(tarball)
     if integ.startswith("sha512-"):
@@ -266,6 +370,59 @@ def install_npm_from_registry(stage):
                 with open(dest, "wb") as f:
                     f.write(tf.extractfile(m).read())
     log(f"  npm {meta['version']} dari registry")
+    return meta["version"]
+
+
+def registry_candidates(node_version, limit=4):
+    """Versi npm yang paling mungkin cocok: tag latest-<mayor-npm-bawaan-node>, lalu versi lain yang
+    engines-nya memenuhi node ini (mayor sama dengan npm bawaan bila diketahui)."""
+    exp = expected_npm_major(node_version)
+    pack = json.loads(fetch(NPM_REGISTRY, headers={"Accept": "application/vnd.npm.install-v1+json"}).decode())
+    out = []
+    tag = pack.get("dist-tags", {}).get(f"latest-{exp}") if exp else None
+    if tag:
+        out.append(tag)
+    vers = []
+    for v, meta in pack.get("versions", {}).items():
+        if "-" in v or _v(v) is None:
+            continue
+        if exp and int(v.split(".")[0]) != exp:
+            continue
+        eng = (meta.get("engines") or {}).get("node")
+        if eng and not satisfies(node_version, eng):
+            continue
+        vers.append(v)
+    vers.sort(key=lambda v: tuple(int(x) for x in v.split(".")), reverse=True)
+    for v in vers:
+        if v not in out:
+            out.append(v)
+    return out[:limit]
+
+
+def ensure_working_npm(stage, node_version, host_node):
+    """Pastikan npm di stage lolos `npm --version` (node host). Bila tidak, coba versi dari registry."""
+    npm_dir = os.path.join(stage, "lib", "node_modules", "npm")
+    structurally_ok = all(os.path.isfile(os.path.join(stage, r)) for r in REQUIRED_NPM_FILES)
+    if structurally_ok:
+        ok, detail = smoke_npm(npm_dir, host_node)
+        log(f"  smoke test npm bawaan Termux: ok={ok} {detail}")
+        if ok is not False:
+            return "termux"
+        log("  npm Termux gagal smoke test -> cari versi yang kompatibel di registry")
+    else:
+        log("  struktur npm Termux tidak lengkap -> ambil dari registry")
+    tried = []
+    for ver in registry_candidates(node_version):
+        install_npm_version(stage, ver)
+        if not all(os.path.isfile(os.path.join(stage, r)) for r in REQUIRED_NPM_FILES):
+            tried.append(f"{ver}: struktur tidak lengkap")
+            continue
+        ok, detail = smoke_npm(npm_dir, host_node)
+        log(f"  smoke test npm {ver}: ok={ok} {detail}")
+        if ok is not False:
+            return f"registry {ver}"
+        tried.append(f"{ver}: {detail}")
+    fail("Tidak ada versi npm yang lolos smoke test: " + " | ".join(tried))
 
 
 # ----------------------------------------------------------------------------- ELF
@@ -482,11 +639,12 @@ def build(args):
             hits = [p for p in paths if "npm-cli.js" in p or p in ("bin/node", "bin/npm")]
             log(f"    {len(paths)} berkas; penting: {hits[:4] or '-'}")
 
-        # npm: pakai Termux bila lengkap, jika tidak ambil dari registry.
-        missing_npm = [r for r in REQUIRED_NPM_FILES if not os.path.isfile(os.path.join(stage, r))]
-        if missing_npm:
-            log("Struktur npm dari Termux tidak lengkap, kurang: " + ", ".join(missing_npm))
-            install_npm_from_registry(stage)
+        # npm: pakai Termux bila lengkap DAN lolos `npm --version`; jika tidak, ambil versi kompatibel.
+        host_node = shutil.which("node")
+        log(f"node host untuk smoke test: {host_node or '-'}"
+            + (f" ({subprocess.run([host_node, '--version'], capture_output=True, text=True).stdout.strip()})" if host_node else ""))
+        npm_source = ensure_working_npm(stage, node_version, host_node)
+        log(f"Sumber npm: {npm_source}")
 
         log("Ukuran terbesar di runtime:")
         summarize(stage)

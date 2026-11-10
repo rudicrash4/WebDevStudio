@@ -7,11 +7,9 @@ atau browser eksternal. Tanpa Termux, tanpa upload ke internet.
 - Kotlin · Jetpack Compose · Material 3 (dark theme utama) · Coroutines · Storage Access Framework
 - Output: `app-debug.apk` dari GitHub Actions (tidak perlu Android Studio)
 
-> **Status jujur (baca ini dulu):** kode ditulis lengkap, tetapi lingkungan penulisnya tidak memiliki
-> Android SDK / akses ke Google Maven, sehingga **APK belum pernah dibangun dan dijalankan di perangkat**.
-> Yang sudah diuji nyata: HTTP server statis (18 pengecekan: Range, HEAD, traversal, MIME wasm, keep-alive)
-> dan logika skrip penyedia runtime. Build pertama di GitHub Actions kemungkinan masih menampilkan
-> beberapa error kompilasi kecil; kirim log-nya dan akan diperbaiki. Lihat [Keterbatasan](#keterbatasan).
+> **Status:** APK dibangun lewat GitHub Actions dan sudah dijalankan di perangkat (Static Hosting, deteksi Node.js terbukti).
+> Yang masih perlu diverifikasi di perangkat: `npm --version` / `npm install` (jika gagal, **Settings → Runtime Node.js**
+> kini menampilkan galat asli dari npm), binding native Vite 8 di Android. Lihat [Keterbatasan](#keterbatasan).
 
 ## Fitur
 
@@ -23,7 +21,9 @@ atau browser eksternal. Tanpa Termux, tanpa upload ke internet.
 | Mode hosting | **Static** (tanpa Node), **Development** (Vite/framework dev server), **Backend** (Node/Express), atau "tidak didukung" dengan penjelasan |
 | Static HTTP server | GET/HEAD, Range (206/416), MIME benar (ES module, `application/wasm`, glb, font, mp4/mp3…), ETag/304, redirect folder, bind `127.0.0.1`, anti directory-traversal, SPA fallback (opsional) |
 | Node.js runtime | Binary `node` + `npm` Android arm64 sungguhan (lihat bawah), `npm install`, `npm run <script>`, Vite, Express, stdout/stderr langsung ke Server Console |
-| Browser internal | WebView + address bar, back/forward/reload, fullscreen (termasuk video), file picker, tab **PREVIEW · CONSOLE · NETWORK · SERVER · ERRORS** |
+| Browser internal | Toolbar ringkas satu baris (✕, alamat, ⟳, ⋮) yang menghormati status bar/navigation bar; menu ⋮: back/forward, ukuran layar, DevTools, layar penuh, mode desktop, JS on/off, hapus cache, buka eksternal; DevTools sebagai **panel bawah** (CONSOLE · NETWORK · SERVER · ERRORS); file picker, video fullscreen |
+| Ukuran layar | Preset ponsel/tablet/laptop/desktop + ukuran kustom (px CSS), putar, skala otomatis agar muat; UA desktop otomatis untuk lebar ≥ 900 |
+| GitHub | Hubungkan dengan Personal Access Token (disimpan terenkripsi Android Keystore); unggah proyek sebagai satu commit lewat Git Data API ke repo yang ada/baru; melewati file yang tidak berubah; mengecualikan `node_modules`, `.git`, `.env*`, `*.pem`, `*.key`; tidak menghapus file di repo |
 | Developer tools | Console (console.*, exception, resource error), Network Monitor (server + fetch/XHR), Error Viewer (tipe, pesan, file, baris, stack) |
 | Server Manager | START / STOP / RESTART / PREVIEW, status **RUNNING hanya setelah port benar-benar menerima koneksi TCP** |
 | Lifecycle | Foreground Service + notifikasi + tombol "Stop semua"; semua proses anak (mis. esbuild) dihentikan saat Stop / app di-swipe |
@@ -80,14 +80,14 @@ menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` +
 
 - **CI** menjalankan `scripts/fetch-node-runtime.py` → `runtime-bundle/assets/node-runtime.zip` → masuk ke APK sebagai aset.
   Termux memisahkan `npm` dari `nodejs-lts`, jadi **kedua paket dipasang** (alternatif `nodejs | nodejs-lts` tidak menarik Node kedua).
-  Bila paket npm Termux tidak lengkap, npm (JavaScript murni) diambil dari registry npm dan diverifikasi sha512.
+  npm dari Termux diuji dengan `node npm-cli.js --version` memakai node runner CI (npm adalah JS murni); bila gagal/tidak lengkap, versi npm yang kompatibel dengan Node tersebut diambil dari registry (sha512 diverifikasi) dan diuji ulang.
 - **Validasi sebelum ZIP dianggap berhasil** (statis, karena runner x86_64 tidak bisa menjalankan binary arm64 bionic):
   bin/node = ELF AArch64; string versi node ada di dalam binary; versi npm dari `package.json`; struktur npm lengkap
   (`npm-cli.js`, `lib/cli.js`, `@npmcli/arborist`); **penutupan library native** (setiap `DT_NEEDED` dari node dan semua `.so`
   yang terjangkau harus ada di bundle atau termasuk library sistem Android); lalu ZIP dibuka ulang dan semuanya dicek lagi.
   Gagal di salah satunya → tidak ada ZIP, skrip exit 1, build APK **tetap lanjut** tanpa runtime (Static Hosting berfungsi).
   `node --version` / `npm --version` yang sesungguhnya dijalankan di perangkat (Settings → Runtime Node.js).
-- Uji logika skrip: `python3 scripts/fetch-node-runtime.py --self-test` (15 pengecekan offline; juga dijalankan di CI).
+- Uji logika skrip: `python3 scripts/fetch-node-runtime.py --self-test` (20 pengecekan offline; juga dijalankan di CI).
 - Di **Settings → Runtime Node.js**: *Pasang dari APK*, atau *Impor ZIP* (ZIP berisi `bin/node`, `lib/…`).
   Setelah dipasang, aplikasi menjalankan `node --version` dan `npm --version`; baru dianggap **SIAP** jika berhasil.
 - `targetSdk = 28` **disengaja**: Android 10+ (targetSdk ≥ 29) melarang `exec` file di direktori data aplikasi,
@@ -96,7 +96,7 @@ menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` +
 
 ## Keterbatasan
 
-- **Belum diuji di perangkat** (lihat catatan status di atas). Runtime Node khususnya adalah bagian berisiko tertinggi:
+- **Verifikasi di perangkat masih berjalan** (lihat catatan status di atas). Runtime Node khususnya adalah bagian berisiko tertinggi:
   jalur unduh Termux di CI, `LD_LIBRARY_PATH`, DNS/npm di Android semuanya baru dapat dibuktikan dengan menjalankan APK.
 - **Paket npm native**: hanya paket yang menyediakan binary Android (`android-arm64`) atau pure-JS/WASM yang jalan.
   Aplikasi mendeteksi beberapa yang bermasalah (sharp, bcrypt, sqlite3, canvas, node-sass, puppeteer, …) dan
@@ -128,6 +128,12 @@ Tidak ada file lokal yang dibutuhkan; Gradle Wrapper (8.14.3) disertakan.
 ```bash
 ./gradlew assembleDebug        # hasil: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+## GitHub
+
+Settings → GitHub → tempel token (klasik: scope `repo`; fine-grained: Contents Read/Write, plus Administration bila ingin membuat repo baru).
+Di kartu proyek ketuk **GitHub** → pilih repo / buat baru → branch → pesan commit → **Unggah**. OAuth device-flow tidak dipakai
+karena membutuhkan OAuth App terdaftar milik pengembang aplikasi. Batas: 3000 file per unggahan, 25 MB per file.
 
 ## Proyek uji yang dituju
 

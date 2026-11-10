@@ -181,18 +181,29 @@ with tarfile.open(fileobj=tgz, mode="w:gz") as t:
 tgz = tgz.getvalue()
 meta = {"version": "11.9.9", "dist": {"tarball": "https://x/npm.tgz", "integrity": "sha512-" + base64.b64encode(hashlib.sha512(tgz).digest()).decode()}}
 orig = f.fetch
-f.fetch = lambda url, retries=3: json.dumps(meta).encode() if url == f.NPM_REGISTRY else tgz
+f.fetch = lambda url, retries=3, headers=None: json.dumps(meta).encode() if url.startswith(f.NPM_REGISTRY) else tgz
 try:
     st2 = tempfile.mkdtemp()
-    f.install_npm_from_registry(st2)
+    f.install_npm_version(st2, '11.9.9')
     check("fallback npm dari registry: semua berkas wajib ada",
           all(os.path.isfile(os.path.join(st2, r)) for r in f.REQUIRED_NPM_FILES))
     meta["dist"]["integrity"] = "sha512-" + base64.b64encode(hashlib.sha512(b"x").digest()).decode()
     try:
-        f.install_npm_from_registry(tempfile.mkdtemp()); check("integritas salah harus gagal", False)
+        f.install_npm_version(tempfile.mkdtemp(), '11.9.9'); check("integritas salah harus gagal", False)
     except f.RuntimeError_:
         check("integritas sha512 npm yang salah ditolak", True)
 finally:
     f.fetch = orig
+
+# ---- 6. semver & smoke test ------------------------------------------------------------
+check("semver ^20 || >=22.9", f.satisfies("24.22.2", "^20.17.0 || >=22.9.0") and not f.satisfies("22.1.0", "^20.17.0 || >=22.9.0"))
+check("semver x-range", f.satisfies("24.22.2", "24") and not f.satisfies("25.0.0", "24"))
+hn = __import__("shutil").which("node")
+d = tempfile.mkdtemp(); os.makedirs(d + "/bin")
+open(d + "/bin/npm-cli.js", "w").write("console.log('9.9.9')"); open(d + "/package.json", "w").write('{"version":"9.9.9"}')
+check("smoke_npm lolos", f.smoke_npm(d, hn)[0] is True if hn else True)
+open(d + "/bin/npm-cli.js", "w").write("throw new Error('boom')")
+check("smoke_npm mendeteksi gagal", f.smoke_npm(d, hn)[0] is False if hn else True)
+check("smoke_npm tanpa node dilewati", f.smoke_npm(d, None)[0] is None)
 
 print(f"SEMUA LULUS ({ok} pengecekan)")

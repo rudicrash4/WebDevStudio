@@ -82,18 +82,26 @@ class NodeRuntime(private val ctx: Context) {
             return Status(false, null, null,
                 "node ada tetapi gagal dijalankan (exit ${v.first}): ${v.second.take(400)}", bundled, abi)
         }
-        val npmV = if (npmCli.exists())
-            runCapture(listOf(nodeBin.absolutePath, npmCli.absolutePath, "--version")).let {
-                if (it.first == 0) it.second.trim() else null
-            } else null
-        return Status(true, v.second.trim(), npmV,
-            if (npmV == null) "Node berjalan, tetapi npm tidak ditemukan di runtime." else "Runtime siap.",
-            bundled, abi)
+        if (!npmCli.exists()) {
+            return Status(true, v.second.trim(), null,
+                "Node berjalan, tetapi npm-cli.js tidak ada di runtime (${npmCli.absolutePath}).", bundled, abi)
+        }
+        val n = runCapture(listOf(nodeBin.absolutePath, npmCli.absolutePath, "--version"))
+        val npmV = n.second.lineSequence().map { it.trim() }
+            .lastOrNull { Regex("""\d+\.\d+\.\d+""").matches(it) }
+        if (n.first != 0 || npmV == null) {
+            // Tampilkan galat nyata (bukan pesan generik) supaya penyebabnya terlihat di Settings.
+            val detail = n.second.trim().lines().filter { it.isNotBlank() }.takeLast(8).joinToString("\n").take(900)
+            return Status(true, v.second.trim(), null,
+                "npm gagal dijalankan (exit ${n.first}):\n$detail", bundled, abi)
+        }
+        return Status(true, v.second.trim(), npmV, "Runtime siap.", bundled, abi)
     }
 
     private fun runCapture(cmd: List<String>): Pair<Int, String> = try {
         val pb = ProcessBuilder(cmd).redirectErrorStream(true)
         pb.environment().putAll(environment())
+        runCatching { pb.directory(File(environment()["HOME"] ?: ctx.filesDir.absolutePath).also { it.mkdirs() }) }
         val p = pb.start()
         val text = p.inputStream.bufferedReader().readText()
         if (!p.waitFor(30, TimeUnit.SECONDS)) { p.destroyForcibly(); -1 to "timeout" }

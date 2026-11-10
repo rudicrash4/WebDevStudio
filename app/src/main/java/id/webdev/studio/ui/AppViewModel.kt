@@ -16,6 +16,10 @@ import id.webdev.studio.data.Project
 import id.webdev.studio.data.SourceType
 import id.webdev.studio.fs.FileFs
 import id.webdev.studio.fs.ProjectFs
+import id.webdev.studio.github.GhRepo
+import id.webdev.studio.github.GitHubClient
+import id.webdev.studio.github.GitHubException
+import id.webdev.studio.github.UploadResult
 import id.webdev.studio.fs.SafFs
 import id.webdev.studio.projects.ProjectAnalyzer
 import id.webdev.studio.projects.ZipImporter
@@ -251,6 +255,70 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         runtime.tmpDir.mkdirs()
         return "Cache dibersihkan (${freed / 1024} KB)"
+    }
+
+    // ---------- GitHub ----------
+
+    var ghLogin by mutableStateOf<String?>(null)
+        private set
+    var ghBusy by mutableStateOf<String?>(null)
+        private set
+    var ghRepos by mutableStateOf<List<GhRepo>>(emptyList())
+        private set
+    var ghResult by mutableStateOf<Result<UploadResult>?>(null)
+        private set
+    @Volatile private var ghCancel = false
+
+    fun ghInit() { if (ghLogin == null && app.vault.load() != null) ghLogin = app.vault.login }
+    fun ghClearResult() { ghResult = null }
+    fun ghCancelUpload() { ghCancel = true }
+
+    fun ghConnect(token: String) {
+        val t = token.trim()
+        if (t.isEmpty()) { toast = "Token kosong"; return }
+        viewModelScope.launch {
+            ghBusy = "Memverifikasi token…"
+            try {
+                val login = withContext(Dispatchers.IO) { GitHubClient(t).login() }
+                app.vault.save(t); app.vault.login = login; ghLogin = login
+                toast = "Terhubung sebagai $login"
+                ghLoadRepos()
+            } catch (e: Throwable) { toast = e.message ?: "Gagal" }
+            ghBusy = null
+        }
+    }
+
+    fun ghDisconnect() { app.vault.clear(); ghLogin = null; ghRepos = emptyList(); toast = "GitHub diputus (token dihapus dari perangkat)" }
+
+    fun ghLoadRepos() {
+        val t = app.vault.load() ?: return
+        viewModelScope.launch {
+            ghBusy = "Memuat daftar repo…"
+            try { ghRepos = withContext(Dispatchers.IO) { GitHubClient(t).listRepos() } }
+            catch (e: Throwable) { toast = e.message ?: "Gagal memuat repo" }
+            ghBusy = null
+        }
+    }
+
+    /** Unggah proyek ke [repo] (atau buat repo baru bila [newRepoName] terisi). */
+    fun ghUpload(p: Project, repo: GhRepo?, newRepoName: String?, newPrivate: Boolean, branch: String, message: String, subdir: String) {
+        val t = app.vault.load() ?: run { toast = "Belum terhubung ke GitHub"; return }
+        ghCancel = false; ghResult = null
+        viewModelScope.launch {
+            ghBusy = "Menyiapkan…"
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val client = GitHubClient(t)
+                    val target = repo ?: client.createRepo(newRepoName!!.trim(), newPrivate)
+                    val br = branch.trim().ifEmpty { target.defaultBranch }
+                    client.upload(servers.fsFor(p), target, br, message.ifBlank { "Update dari WebDev Studio" }, subdir,
+                        onProgress = { m -> ghBusy = m }, cancelled = { ghCancel })
+                }
+            }
+            ghResult = res
+            ghBusy = null
+            if (res.isSuccess) ghLoadRepos()
+        }
     }
 
     companion object {

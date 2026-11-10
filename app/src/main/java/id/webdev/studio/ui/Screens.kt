@@ -202,6 +202,8 @@ private fun ProjectCard(
 ) {
     val sm = vm.servers
     val active = info?.isActive == true
+    var ghOpen by remember { mutableStateOf(false) }
+    if (ghOpen) GitHubUploadDialog(vm, p) { ghOpen = false }
     Card(
         colors = CardDefaults.cardColors(containerColor = Dev.Surface),
         border = BorderStroke(1.dp, Dev.Border), modifier = Modifier.fillMaxWidth()
@@ -260,6 +262,7 @@ private fun ProjectCard(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = { onOpen(p) }) { Text("Open") }
                 TextButton(onClick = onSettings) { Text("Settings") }
+                TextButton(onClick = { ghOpen = true }) { Text("GitHub") }
                 if (p.hostingMode == HostingMode.DEV || p.hostingMode == HostingMode.BACKEND)
                     TextButton(onClick = { sm.installDependencies(p) }, enabled = !active) { Text("npm install") }
                 Spacer(Modifier.weight(1f))
@@ -392,6 +395,9 @@ fun SettingsScreen(
             label = { Text("Default hosting port (proyek baru)") }, singleLine = true, modifier = Modifier.fillMaxWidth()
         )
         SwitchRow("SPA fallback (Static)", "Rute tak dikenal dialihkan ke index.html", s.spaFallback, s::updateSpaFallback)
+
+        SectionTitle("GitHub")
+        GitHubCard(vm)
 
         SectionTitle("Runtime Node.js")
         Card(colors = CardDefaults.cardColors(containerColor = Dev.Surface), border = BorderStroke(1.dp, Dev.Border)) {

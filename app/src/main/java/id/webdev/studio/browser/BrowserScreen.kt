@@ -24,7 +24,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -106,6 +123,21 @@ class DevBridge(private val logs: ProjectLogs) {
     }
 }
 
+/** Ukuran viewport (px CSS = dp) untuk menguji halaman seperti di perangkat lain. */
+data class DeviceSize(val name: String, val w: Int, val h: Int)
+
+private val DEVICE_PRESETS = listOf(
+    DeviceSize("Ponsel kecil", 320, 568),
+    DeviceSize("Ponsel 360×640", 360, 640),
+    DeviceSize("Ponsel 390×844", 390, 844),
+    DeviceSize("Ponsel besar 412×915", 412, 915),
+    DeviceSize("Tablet kecil 600×960", 600, 960),
+    DeviceSize("Tablet 768×1024", 768, 1024),
+    DeviceSize("Tablet besar 1024×1366", 1024, 1366),
+    DeviceSize("Laptop 1280×800", 1280, 800),
+    DeviceSize("Desktop 1920×1080", 1920, 1080),
+)
+
 private enum class Tab3(val label: String) { PREVIEW("PREVIEW"), CONSOLE("CONSOLE"), NETWORK("NETWORK"), SERVER("SERVER"), ERRORS("ERRORS") }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -128,6 +160,9 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
     var settingsOpen by remember { mutableStateOf(false) }
     var desktopMode by remember { mutableStateOf(false) }
     var jsEnabled by remember { mutableStateOf(true) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var sizeDialog by remember { mutableStateOf(false) }
+    var device by remember { mutableStateOf<DeviceSize?>(null) }
 
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val cb = fileCb; fileCb = null
@@ -169,71 +204,75 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
     }
     DisposableEffect(Unit) { onDispose { wv?.let { it.stopLoading(); it.destroy() }; wv = null } }
 
-    Column(Modifier.fillMaxSize().background(Dev.Bg)) {
+    fun applyDevice(d: DeviceSize?) {
+        device = d
+        wv?.settings?.let { st -> applyUa(st, desktopMode || (d != null && d.w >= 900)) }
+        wv?.reload()
+    }
+    fun navigate(raw0: String) {
+        // Alamat hanya boleh menuju server lokal; selain itu dibuka di browser eksternal.
+        val raw = raw0.trim()
+        val target = when {
+            raw.startsWith("/") && baseUrl != null -> baseUrl.trimEnd('/') + raw
+            raw.startsWith("http") -> raw
+            baseUrl != null -> baseUrl.trimEnd('/') + "/" + raw
+            else -> raw
+        }
+        val u = Uri.parse(target)
+        if (isLocal(u)) wv?.loadUrl(target)
+        else ctx.startActivity(Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    val chrome = !fullscreen && customView == null
+    Column(
+        Modifier.fillMaxSize().background(Dev.Bg)
+            .then(if (chrome) Modifier.statusBarsPadding().navigationBarsPadding().imePadding() else Modifier)
+    ) {
         if (!fullscreen) {
-            // ---- Address bar ----
-            Row(Modifier.fillMaxWidth().background(Dev.Surface).padding(horizontal = 4.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Text("✕", color = Dev.Text) }
-                IconButton(onClick = { wv?.goBack() }, enabled = canBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = if (canBack) Dev.Text else Dev.Muted) }
-                IconButton(onClick = { wv?.goForward() }, enabled = canForward) { Icon(Icons.AutoMirrored.Filled.ArrowForward, "Forward", tint = if (canForward) Dev.Text else Dev.Muted) }
-                IconButton(onClick = { wv?.reload() }) { Icon(Icons.Filled.Refresh, "Reload", tint = Dev.Text) }
-                OutlinedTextField(
+            // ---- Toolbar ringkas: ✕  [alamat]  ⟳  ⋮ ----
+            Row(Modifier.fillMaxWidth().height(44.dp).background(Dev.Surface).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("✕", color = Dev.Text, fontSize = 16.sp) }
+                BasicTextField(
                     value = address, onValueChange = { address = it }, singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).height(34.dp).clip(RoundedCornerShape(17.dp)).background(Dev.Surface2),
                     textStyle = androidx.compose.ui.text.TextStyle(fontFamily = Dev.Mono, fontSize = 12.sp, color = Dev.Text),
+                    cursorBrush = SolidColor(Dev.Blue),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go),
-                    keyboardActions = KeyboardActions(onGo = {
-                        // Alamat hanya boleh menuju server lokal; selain itu dibuka di browser eksternal.
-                        val raw = address.trim()
-                        val target = when {
-                            raw.startsWith("/") && baseUrl != null -> baseUrl.trimEnd('/') + raw
-                            raw.startsWith("http") -> raw
-                            baseUrl != null -> baseUrl.trimEnd('/') + "/" + raw
-                            else -> raw
-                        }
-                        val u = Uri.parse(target)
-                        if (isLocal(u)) wv?.loadUrl(target)
-                        else ctx.startActivity(Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }),
-                    shape = RoundedCornerShape(8.dp)
+                    keyboardActions = KeyboardActions(onGo = { navigate(address) }),
+                    decorationBox = { inner -> Box(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) { inner() } }
                 )
-                TextButton(onClick = { fullscreen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)) { Text("⛶", color = Dev.Text, fontSize = 18.sp) }
-                TextButton(onClick = { settingsOpen = !settingsOpen }, contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp)) { Text("⋮", color = Dev.Text, fontSize = 18.sp) }
-            }
-            if (loadingPct in 1..99) androidx.compose.material3.LinearProgressIndicator(progress = { loadingPct / 100f }, modifier = Modifier.fillMaxWidth())
-            if (settingsOpen) {
-                Column(Modifier.fillMaxWidth().background(Dev.Surface2).padding(12.dp)) {
-                    Text("Browser Settings", color = Dev.Muted, fontSize = 11.sp, fontFamily = Dev.Mono)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Desktop mode", color = Dev.Text, modifier = Modifier.weight(1f))
-                        androidx.compose.material3.Switch(desktopMode, { desktopMode = it; wv?.settings?.let { s -> applyUa(s, it) }; wv?.reload() })
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("JavaScript", color = Dev.Text, modifier = Modifier.weight(1f))
-                        androidx.compose.material3.Switch(jsEnabled, { jsEnabled = it; wv?.settings?.javaScriptEnabled = it; wv?.reload() })
-                    }
-                    Row {
-                        TextButton(onClick = { wv?.clearCache(true); main.post { logs.addServer(LogLevel.INFO, "Cache WebView dibersihkan") } }) { Text("Hapus cache") }
-                        TextButton(onClick = { baseUrl?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } }, enabled = baseUrl != null) { Text("Buka di browser eksternal") }
+                TextButton(onClick = { wv?.reload() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("⟳", color = Dev.Text, fontSize = 18.sp) }
+                Box {
+                    TextButton(onClick = { menuOpen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("⋮", color = Dev.Text, fontSize = 18.sp) }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(text = { Text("Kembali") }, enabled = canBack, onClick = { menuOpen = false; wv?.goBack() })
+                        DropdownMenuItem(text = { Text("Maju") }, enabled = canForward, onClick = { menuOpen = false; wv?.goForward() })
+                        DropdownMenuItem(text = { Text("Ukuran layar…" + (device?.let { "  (${it.w}×${it.h})" } ?: "")) }, onClick = { menuOpen = false; sizeDialog = true })
+                        DropdownMenuItem(text = { Text(if (tab == Tab3.PREVIEW) "Buka DevTools" else "Tutup DevTools") },
+                            onClick = { menuOpen = false; tab = if (tab == Tab3.PREVIEW) Tab3.CONSOLE else Tab3.PREVIEW })
+                        DropdownMenuItem(text = { Text("Layar penuh") }, onClick = { menuOpen = false; fullscreen = true })
+                        DropdownMenuItem(text = { Text((if (desktopMode) "✓ " else "") + "Mode desktop") },
+                            onClick = { menuOpen = false; desktopMode = !desktopMode; wv?.settings?.let { st -> applyUa(st, desktopMode || ((device?.w ?: 0) >= 900)) }; wv?.reload() })
+                        DropdownMenuItem(text = { Text((if (jsEnabled) "✓ " else "") + "JavaScript") },
+                            onClick = { menuOpen = false; jsEnabled = !jsEnabled; wv?.settings?.javaScriptEnabled = jsEnabled; wv?.reload() })
+                        DropdownMenuItem(text = { Text("Hapus cache") }, onClick = { menuOpen = false; wv?.clearCache(true); main.post { logs.addServer(LogLevel.INFO, "Cache WebView dibersihkan") } })
+                        DropdownMenuItem(text = { Text("Buka di browser eksternal") }, enabled = baseUrl != null,
+                            onClick = { menuOpen = false; baseUrl?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
                     }
                 }
             }
-            // ---- Tab ----
-            TabRow(selectedTabIndex = tab.ordinal, containerColor = Dev.Surface, contentColor = Dev.Blue) {
-                Tab3.values().forEach { t ->
-                    val badge = when (t) {
-                        Tab3.ERRORS -> logs.js.count { it.level == LogLevel.ERROR }.takeIf { it > 0 }?.let { " ($it)" } ?: ""
-                        else -> ""
-                    }
-                    Tab(selected = tab == t, onClick = { tab = t }, text = { Text(t.label + badge, fontSize = 10.sp, fontFamily = Dev.Mono, maxLines = 1) })
-                }
-            }
+            if (loadingPct in 1..99) androidx.compose.material3.LinearProgressIndicator(progress = { loadingPct / 100f }, modifier = Modifier.fillMaxWidth().height(2.dp))
         }
 
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            // WebView selalu hidup (tidak di-recreate saat berpindah tab).
+          BoxWithConstraints(Modifier.fillMaxSize().background(if (device != null) androidx.compose.ui.graphics.Color(0xFF05070A) else Dev.Bg), contentAlignment = Alignment.Center) {
+            val d = device
+            val sc = if (d == null) 1f else minOf(1f, maxWidth.value / d.w, maxHeight.value / d.h)
+            val frame = if (d == null) Modifier.fillMaxSize()
+                else Modifier.requiredSize(d.w.dp, d.h.dp).graphicsLayer { scaleX = sc; scaleY = sc }.border(BorderStroke(1.dp, Dev.Blue))
+            // WebView selalu hidup (tidak di-recreate saat berpindah tab / ukuran).
             AndroidView(
-                modifier = Modifier.fillMaxSize(),
+                modifier = frame,
                 factory = { c ->
                     WebView(c).apply {
                         setBackgroundColor(0xFF0D1117.toInt())
@@ -332,6 +371,9 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                 },
                 update = { }
             )
+            if (d != null) Text("${d.w}×${d.h} · ${(sc * 100).toInt()}%", color = Dev.Text, fontSize = 10.sp, fontFamily = Dev.Mono,
+                modifier = Modifier.align(Alignment.BottomCenter).background(Dev.Surface.copy(alpha = 0.8f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
+          }
 
             // Layar tunggu bila server belum RUNNING
             if (!running && tab == Tab3.PREVIEW) {
@@ -339,14 +381,6 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                     Text(if (info == null) "Server belum berjalan." else "Status: ${id.webdev.studio.ui.statusText(info.status)}", color = Dev.Text, fontFamily = Dev.Mono)
                     info?.error?.let { Text(it, color = Dev.Red, fontSize = 12.sp, fontFamily = Dev.Mono, modifier = Modifier.padding(top = 8.dp)) }
                 }
-            }
-
-            when (tab) {
-                Tab3.PREVIEW -> {}
-                Tab3.CONSOLE -> LogPanel { JsConsole(logs, onClear = { logs.js.clear() }) }
-                Tab3.NETWORK -> LogPanel { NetworkPanel(logs, onClear = { logs.net.clear() }) }
-                Tab3.SERVER -> LogPanel { ServerConsole(logs, onClear = { logs.server.clear() }) }
-                Tab3.ERRORS -> LogPanel { ErrorViewer(logs, onClear = { logs.js.removeAll { it.level == LogLevel.ERROR } }) }
             }
 
             if (fullscreen && customView == null) {
@@ -361,7 +395,70 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                 )
             }
         }
+
+        // ---- DevTools sebagai panel bawah (tidak menutupi halaman sepenuhnya) ----
+        if (!fullscreen && tab != Tab3.PREVIEW) {
+            androidx.compose.material3.HorizontalDivider(color = Dev.Muted.copy(alpha = 0.3f))
+            Column(Modifier.weight(0.9f).fillMaxWidth().background(Dev.Bg)) {
+                Row(Modifier.fillMaxWidth().background(Dev.Surface), verticalAlignment = Alignment.CenterVertically) {
+                    Tab3.values().filter { it != Tab3.PREVIEW }.forEach { t ->
+                        val badge = if (t == Tab3.ERRORS) logs.js.count { it.level == LogLevel.ERROR }.takeIf { it > 0 }?.let { " ($it)" } ?: "" else ""
+                        Text(t.label + badge, fontSize = 10.sp, fontFamily = Dev.Mono, maxLines = 1,
+                            color = if (tab == t) Dev.Blue else Dev.Muted,
+                            modifier = Modifier.weight(1f).clickable { tab = t }.padding(vertical = 11.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    }
+                    TextButton(onClick = { tab = Tab3.PREVIEW }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text("✕", color = Dev.Text) }
+                }
+                when (tab) {
+                    Tab3.CONSOLE -> LogPanel { JsConsole(logs, onClear = { logs.js.clear() }) }
+                    Tab3.NETWORK -> LogPanel { NetworkPanel(logs, onClear = { logs.net.clear() }) }
+                    Tab3.SERVER -> LogPanel { ServerConsole(logs, onClear = { logs.server.clear() }) }
+                    Tab3.ERRORS -> LogPanel { ErrorViewer(logs, onClear = { logs.js.removeAll { it.level == LogLevel.ERROR } }) }
+                    else -> {}
+                }
+            }
+        }
     }
+
+    if (sizeDialog) DeviceSizeDialog(device, onDismiss = { sizeDialog = false }, onPick = { sizeDialog = false; applyDevice(it) })
+}
+
+@Composable
+private fun DeviceSizeDialog(current: DeviceSize?, onDismiss: () -> Unit, onPick: (DeviceSize?) -> Unit) {
+    var cw by remember { mutableStateOf((current?.w ?: 390).toString()) }
+    var ch by remember { mutableStateOf((current?.h ?: 844).toString()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Dev.Surface,
+        title = { Text("Ukuran layar", color = Dev.Text) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                @Composable
+                fun row(label: String, selected: Boolean, onClick: () -> Unit) {
+                    Text((if (selected) "● " else "○ ") + label, color = if (selected) Dev.Blue else Dev.Text, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 9.dp))
+                }
+                row("Penuh (ukuran layar perangkat ini)", current == null) { onPick(null) }
+                DEVICE_PRESETS.forEach { p -> row(p.name, current?.w == p.w && current.h == p.h) { onPick(p) } }
+                Text("Kustom (px CSS)", color = Dev.Muted, fontSize = 11.sp, fontFamily = Dev.Mono, modifier = Modifier.padding(top = 10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(cw, { cw = it.filter(Char::isDigit).take(4) }, singleLine = true, label = { Text("Lebar") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                    Text("×", color = Dev.Text, modifier = Modifier.padding(horizontal = 6.dp))
+                    OutlinedTextField(ch, { ch = it.filter(Char::isDigit).take(4) }, singleLine = true, label = { Text("Tinggi") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                }
+                Row {
+                    TextButton(onClick = { val t = cw; cw = ch; ch = t }) { Text("⟲ Putar (tukar)") }
+                    TextButton(onClick = {
+                        val w = cw.toIntOrNull()?.coerceIn(200, 4000); val h = ch.toIntOrNull()?.coerceIn(200, 4000)
+                        if (w != null && h != null) onPick(DeviceSize("Kustom", w, h))
+                    }) { Text("Terapkan") }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Tutup") } }
+    )
 }
 
 private fun applyUa(s: WebSettings, desktop: Boolean) {
