@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build-debug-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -30,20 +30,65 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Siapkan runtime Node.js (aset APK)
+      # Android SDK: runner GitHub sudah membawa SDK + cmdline-tools. Kita TIDAK memakai
+      # android-actions/setup-android karena action itu menjalankan `sdkmanager tools`,
+      # paket yang sudah tidak ada ("Failed to find package 'tools'").
+      - name: Setup Android SDK (platform-tools, platform 35, build-tools 35.0.0)
+        run: |
+          set -eu
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          mkdir -p "$SDK"
+          echo "SDK root: $SDK"
+
+          SDKMANAGER="$(ls -1 "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "cmdline-tools tidak ditemukan di runner; mengunduh dari dl.google.com"
+            curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+            rm -rf /tmp/clt && mkdir -p /tmp/clt "$SDK/cmdline-tools"
+            unzip -q /tmp/cmdline-tools.zip -d /tmp/clt
+            rm -rf "$SDK/cmdline-tools/latest"
+            mv /tmp/clt/cmdline-tools "$SDK/cmdline-tools/latest"
+            SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+
+          # Terima lisensi (SIGPIPE dari `yes` diabaikan).
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses > /dev/null || true
+
+          # Hanya paket yang valid. TIDAK ada paket "tools".
+          "$SDKMANAGER" --sdk_root="$SDK" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          echo "---- paket terpasang ----"
+          "$SDKMANAGER" --sdk_root="$SDK" --list_installed
+
+          # Bukti nyata, bukan asumsi:
+          test -x "$SDK/platform-tools/adb"            || { echo "::error::platform-tools tidak terpasang"; exit 1; }
+          test -f "$SDK/platforms/android-35/android.jar" || { echo "::error::Android SDK Platform 35 tidak terpasang"; exit 1; }
+          test -x "$SDK/build-tools/35.0.0/aapt2"      || { echo "::error::Build Tools 35.0.0 tidak terpasang"; exit 1; }
+          echo "OK: platform-tools, platforms;android-35, build-tools;35.0.0"
+
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "sdk.dir=$SDK" > local.properties
+
+      # Runtime Node.js: kegagalan di sini TIDAK menggagalkan build. APK tetap dibuat dan
+      # Static Hosting tetap berfungsi; runtime bisa diimpor manual di Settings > Runtime.
+      - name: Uji logika skrip runtime (offline)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_node }}
-        # Gagal di sini TIDAK menggagalkan build: APK tetap jadi (Static Hosting jalan),
-        # runtime dapat diimpor manual di Settings > Runtime.
+        continue-on-error: true
+        run: python3 scripts/fetch-node-runtime.py --self-test
+
+      - name: Siapkan runtime Node.js (aset APK)
+        id: node_runtime
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_node }}
         continue-on-error: true
         run: python3 scripts/fetch-node-runtime.py --out runtime-bundle/assets/node-runtime.zip
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages
+      - name: Runtime Node.js gagal -> lanjut tanpa runtime
+        if: ${{ steps.node_runtime.outcome == 'failure' }}
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          rm -f runtime-bundle/assets/node-runtime.zip runtime-bundle/assets/node-runtime.zip.tmp
+          echo "::warning::Runtime Node.js GAGAL disiapkan (lihat log langkah sebelumnya). APK dibuat tanpa runtime; Static Hosting tetap berfungsi."
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -59,8 +104,9 @@ jobs:
           APK=app/build/outputs/apk/debug/app-debug.apk
           test -f "$APK" || { echo "::error::app-debug.apk tidak dibuat"; ls -R app/build/outputs || true; exit 1; }
           ls -lh "$APK"
+          unzip -tq "$APK"
           if unzip -l "$APK" | grep -q "assets/node-runtime.zip"; then
-            echo "Runtime Node.js: TERSERTAKAN"
+            echo "Runtime Node.js: TERSERTAKAN di APK"
           else
             echo "::warning::Runtime Node.js tidak tersertakan di APK (hanya Static Hosting sampai runtime diimpor)"
           fi
@@ -71,3 +117,13 @@ jobs:
           name: app-debug.apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Upload laporan build (bila gagal)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            app/build/reports
+            app/build/outputs/logs
+          if-no-files-found: ignore

@@ -19,15 +19,15 @@ class ProjectLogs {
 
     fun addServer(level: LogLevel, text: String) {
         server.add(LogLine(System.currentTimeMillis(), level, text))
-        if (server.size > MAX) server.removeRange(0, server.size - MAX)
+        while (server.size > MAX) server.removeAt(0)
     }
     fun addJs(m: JsMessage) {
         js.add(m)
-        if (js.size > MAX) js.removeRange(0, js.size - MAX)
+        while (js.size > MAX) js.removeAt(0)
     }
     fun addNet(n: NetEntry) {
         net.add(n)
-        if (net.size > MAX) net.removeRange(0, net.size - MAX)
+        while (net.size > MAX) net.removeAt(0)
     }
 }
 

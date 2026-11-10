@@ -78,8 +78,16 @@ Pendekatan yang dipakai: binary `node` + `npm` dari repositori paket Termux, dij
 terpisah (bukan `nodejs-mobile`). Alasannya: `nodejs-mobile` hanya satu instance in-process dan tidak
 menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` + Vite sungguhan.
 
-- **CI** menjalankan `scripts/fetch-node-runtime.py` (resolve dependensi, verifikasi SHA256, cek ELF AArch64)
-  → `runtime-bundle/assets/node-runtime.zip` → masuk ke APK sebagai aset.
+- **CI** menjalankan `scripts/fetch-node-runtime.py` → `runtime-bundle/assets/node-runtime.zip` → masuk ke APK sebagai aset.
+  Termux memisahkan `npm` dari `nodejs-lts`, jadi **kedua paket dipasang** (alternatif `nodejs | nodejs-lts` tidak menarik Node kedua).
+  Bila paket npm Termux tidak lengkap, npm (JavaScript murni) diambil dari registry npm dan diverifikasi sha512.
+- **Validasi sebelum ZIP dianggap berhasil** (statis, karena runner x86_64 tidak bisa menjalankan binary arm64 bionic):
+  bin/node = ELF AArch64; string versi node ada di dalam binary; versi npm dari `package.json`; struktur npm lengkap
+  (`npm-cli.js`, `lib/cli.js`, `@npmcli/arborist`); **penutupan library native** (setiap `DT_NEEDED` dari node dan semua `.so`
+  yang terjangkau harus ada di bundle atau termasuk library sistem Android); lalu ZIP dibuka ulang dan semuanya dicek lagi.
+  Gagal di salah satunya → tidak ada ZIP, skrip exit 1, build APK **tetap lanjut** tanpa runtime (Static Hosting berfungsi).
+  `node --version` / `npm --version` yang sesungguhnya dijalankan di perangkat (Settings → Runtime Node.js).
+- Uji logika skrip: `python3 scripts/fetch-node-runtime.py --self-test` (15 pengecekan offline; juga dijalankan di CI).
 - Di **Settings → Runtime Node.js**: *Pasang dari APK*, atau *Impor ZIP* (ZIP berisi `bin/node`, `lib/…`).
   Setelah dipasang, aplikasi menjalankan `node --version` dan `npm --version`; baru dianggap **SIAP** jika berhasil.
 - `targetSdk = 28` **disengaja**: Android 10+ (targetSdk ≥ 29) melarang `exec` file di direktori data aplikasi,
@@ -108,9 +116,11 @@ menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` +
 2. Tab **Actions → Android Build** berjalan otomatis (atau **Run workflow**; centang/uncentang *bundle_node*).
 3. Setelah selesai, unduh artifact **`app-debug.apk`** dari halaman run.
 
-Workflow (`.github/workflows/android-build.yml`): checkout → JDK 17 → (opsional) siapkan runtime Node →
-Android SDK → Gradle → `assembleDebug` → verifikasi APK ada → upload artifact. Langkah runtime Node
-`continue-on-error`: bila gagal, APK tetap dibuat dan peringatan tampil di log; runtime bisa diimpor manual.
+Workflow (`.github/workflows/android-build.yml`): checkout → JDK 17 → **Android SDK** (`sdkmanager`: `platform-tools`,
+`platforms;android-35`, `build-tools;35.0.0`, lalu diverifikasi keberadaan `adb`/`android.jar`/`aapt2`; **tidak** meminta paket
+`tools` yang sudah tidak ada, dan tidak memakai `android-actions/setup-android`) → (opsional) runtime Node → Gradle
+→ `assembleDebug` → verifikasi APK → upload artifact (`app-debug.apk`; laporan build ikut diunggah bila gagal).
+Langkah runtime Node `continue-on-error`: bila gagal, APK tetap dibuat dan peringatan tampil di log.
 Tidak ada file lokal yang dibutuhkan; Gradle Wrapper (8.14.3) disertakan.
 
 ### Build lokal (opsional)

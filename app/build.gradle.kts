@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "id.webdev.studio"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "id.webdev.studio"

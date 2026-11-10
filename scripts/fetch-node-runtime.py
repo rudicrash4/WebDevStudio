@@ -2,27 +2,36 @@
 """
 Menyiapkan runtime Node.js + npm untuk Android (arm64, bionic) sebagai aset APK.
 
-Sumber: repositori paket Termux (https://packages.termux.dev), yang menyediakan build Node.js
-untuk Android/bionic. Skrip ini:
-  1. mengunduh indeks `Packages` (aarch64),
-  2. me-resolve dependency paket (nodejs-lts -> libc++, openssl, icu, ... ),
-  3. memverifikasi SHA256 setiap .deb,
-  4. mengekstrak bin/ dan lib/ ke satu direktori (prefix runtime),
-  5. men-dereference symlink dan menulis `node-runtime.zip`.
+Sumber utama: repositori paket Termux (https://packages.termux.dev).
+  * Termux memisahkan `npm` dari `nodejs`/`nodejs-lts`, jadi KEDUANYA dipasang.
+  * Bila paket npm Termux tidak lengkap, npm (JavaScript murni) diambil dari registry npm
+    dan diverifikasi integritasnya (sha512).
 
-Di sisi aplikasi (NodeRuntime.kt) isi ZIP diekstrak ke filesDir/runtime/usr dan dijalankan dengan
-LD_LIBRARY_PATH=<usr>/lib. Aplikasi memverifikasi dengan `node --version` sebelum dianggap siap.
+Validasi STATIS sebelum ZIP dianggap berhasil (runner CI x86_64 tidak bisa menjalankan binary arm64
+bionic, jadi `node --version` yang sesungguhnya dijalankan di HP oleh NodeRuntime.check()):
+  1. bin/node adalah ELF AArch64.
+  2. Versi node dari metadata paket HARUS muncul sebagai string di dalam binary.
+  3. Versi npm dibaca dari lib/node_modules/npm/package.json (setara `npm --version`).
+  4. Struktur npm lengkap (bin/npm-cli.js, lib/cli.js, node_modules/@npmcli/arborist).
+  5. Penutupan library native: setiap DT_NEEDED dari node (dan semua .so yang terjangkau) harus ada
+     di bundle atau termasuk library sistem Android. Yang hilang => GAGAL.
+  6. ZIP dibuka ulang ke direktori sementara dan semua pengecekan di atas diulang pada isinya.
+ZIP hanya ditulis bila semuanya lolos; bila gagal, skrip exit 1 dan TIDAK menghasilkan ZIP.
 
 Pemakaian:
   python3 scripts/fetch-node-runtime.py --out runtime-bundle/assets/node-runtime.zip
-  python3 scripts/fetch-node-runtime.py --package nodejs   # versi Node terbaru (bukan LTS)
+  python3 scripts/fetch-node-runtime.py --package nodejs        # Node terbaru (bukan LTS)
+  python3 scripts/fetch-node-runtime.py --self-test             # uji logika offline
 """
 import argparse
+import base64
 import gzip
 import hashlib
 import io
+import json
 import lzma
 import os
+import re
 import shutil
 import struct
 import sys
@@ -34,35 +43,63 @@ import zipfile
 REPO = "https://packages.termux.dev/apt/termux-main"
 INDEX = REPO + "/dists/stable/main/binary-aarch64/Packages"
 PREFIX = "data/data/com.termux/files/usr/"
+NPM_REGISTRY = "https://registry.npmjs.org/npm/latest"
 
-# Paket Termux yang tidak diperlukan (alat shell/pengelola paket, bukan dependensi runtime Node).
+NODE_PACKAGES = {"nodejs", "nodejs-lts", "nodejs-current"}
+
+# Paket Termux yang bukan dependensi runtime Node (alat shell / pengelola paket).
 SKIP = {
     "termux-tools", "termux-exec", "termux-keyring", "termux-licenses", "termux-core", "termux-am",
     "termux-am-socket", "apt", "dpkg", "bash", "dash", "coreutils", "busybox", "util-linux",
     "ca-certificates", "resolv-conf", "gdbm", "libandroid-glob", "libandroid-posix-semaphore",
 }
-# Direktori/berkas dalam prefix yang tidak dibawa ke APK (menghemat puluhan MB).
 SKIP_PARTS = ("/share/man/", "/share/doc/", "/include/", "/lib/pkgconfig/", "/lib/cmake/",
               "/node_modules/npm/docs/", "/node_modules/npm/man/", "/node_modules/corepack/")
 KEEP_TOP = ("bin/", "lib/", "etc/")
+
+# Library yang disediakan Android (NDK stable API) -> tidak perlu dibundel.
+ANDROID_SYSTEM_LIBS = {
+    "libc.so", "libm.so", "libdl.so", "liblog.so", "libz.so", "libstdc++.so", "libandroid.so",
+    "libjnigraphics.so", "libnativewindow.so", "libEGL.so", "libGLESv1_CM.so", "libGLESv2.so",
+    "libGLESv3.so", "libvulkan.so", "libOpenSLES.so", "libmediandk.so", "libcamera2ndk.so",
+    "libaaudio.so", "libbinder_ndk.so", "libsync.so", "libneuralnetworks.so", "libadbconnection.so",
+    "ld-android.so", "libnetd_client.so",
+}
+
+REQUIRED_NPM_FILES = (
+    "lib/node_modules/npm/bin/npm-cli.js",
+    "lib/node_modules/npm/lib/cli.js",
+    "lib/node_modules/npm/package.json",
+    "lib/node_modules/npm/node_modules/@npmcli/arborist/package.json",
+)
+
+
+class RuntimeError_(Exception):
+    pass
 
 
 def log(*a):
     print(*a, file=sys.stderr, flush=True)
 
 
+def fail(msg):
+    raise RuntimeError_(msg)
+
+
+# ----------------------------------------------------------------------------- jaringan
 def fetch(url, retries=3):
     last = None
     for i in range(retries):
         try:
-            with urllib.request.urlopen(url, timeout=120) as r:
+            with urllib.request.urlopen(url, timeout=180) as r:
                 return r.read()
         except Exception as e:  # noqa: BLE001
             last = e
             log(f"  retry {i + 1}/{retries} {url}: {e}")
-    raise SystemExit(f"Gagal mengunduh {url}: {last}")
+    fail(f"Gagal mengunduh {url}: {last}")
 
 
+# ----------------------------------------------------------------------------- indeks Termux
 def parse_packages(text):
     index = {}
     for block in text.split("\n\n"):
@@ -79,34 +116,51 @@ def parse_packages(text):
 
 
 def parse_depends(s):
-    names = []
+    """'a (>= 1), b | c' -> [['a'], ['b', 'c']]  (grup alternatif)."""
+    groups = []
     for part in s.split(","):
-        first = part.split("|")[0].strip()
-        name = first.split("(")[0].strip()
-        if name:
-            names.append(name)
-    return names
+        alts = []
+        for alt in part.split("|"):
+            name = alt.split("(")[0].strip()
+            if name:
+                alts.append(name)
+        if alts:
+            groups.append(alts)
+    return groups
 
 
-def resolve(roots, index):
-    order, seen, stack = [], set(), list(roots)
-    while stack:
-        n = stack.pop(0)
-        if n in seen or n in SKIP:
+def resolve(roots, index, chosen_node):
+    """Urutan paket yang dipasang. Alternatif 'nodejs | nodejs-lts' dianggap terpenuhi oleh
+    paket Node yang sudah dipilih (agar tidak menarik dua versi Node)."""
+    order, seen = [], set()
+    queue = list(roots)
+    while queue:
+        n = queue.pop(0)
+        if n in seen:
             continue
         if n not in index:
-            log(f"  (dependency tidak ada di indeks, dilewati: {n})")
+            log(f"  (tidak ada di indeks, dilewati: {n})")
             continue
         seen.add(n)
         order.append(n)
-        stack.extend(parse_depends(index[n].get("Depends", "")))
-        stack.extend(parse_depends(index[n].get("Pre-Depends", "")))
+        for key in ("Depends", "Pre-Depends"):
+            for alts in parse_depends(index[n].get(key, "")):
+                if any(a in seen or a in SKIP for a in alts):
+                    continue
+                if any(a in NODE_PACKAGES for a in alts):
+                    continue  # dipenuhi oleh chosen_node
+                pick = next((a for a in alts if a in index), None)
+                if pick:
+                    queue.append(pick)
+                else:
+                    log(f"  (dependency tidak ada di indeks: {' | '.join(alts)})")
     return order
 
 
+# ----------------------------------------------------------------------------- .deb
 def read_ar(data):
     if not data.startswith(b"!<arch>\n"):
-        raise ValueError("bukan arsip ar/deb")
+        fail("bukan arsip ar/deb")
     pos, files = 8, {}
     while pos + 60 <= len(data):
         hdr = data[pos:pos + 60]
@@ -127,13 +181,15 @@ def open_data_tar(files):
                 return tarfile.open(fileobj=io.BytesIO(gzip.decompress(blob)))
             if name.endswith(".tar"):
                 return tarfile.open(fileobj=io.BytesIO(blob))
-            raise SystemExit(f"Format {name} belum didukung (butuh xz/gz)")
-    raise SystemExit("data.tar.* tidak ditemukan di .deb")
+            fail(f"Format {name} belum didukung (butuh xz/gz)")
+    fail("data.tar.* tidak ditemukan di .deb")
 
 
 def extract_deb(blob, stage):
+    """Ekstrak bin/, lib/, etc/ dari prefix Termux ke stage. Mengembalikan daftar path relatif."""
     tf = open_data_tar(read_ar(blob))
-    n = 0
+    stage_real = os.path.realpath(stage)
+    paths = []
     for m in tf:
         name = m.name
         while name.startswith("./"):
@@ -146,47 +202,213 @@ def extract_deb(blob, stage):
         if any(p in "/" + rel for p in SKIP_PARTS):
             continue
         dest = os.path.join(stage, rel)
-        # Perlindungan path traversal di dalam arsip
-        if not os.path.realpath(dest).startswith(os.path.realpath(stage) + os.sep):
-            raise SystemExit(f"Entri berbahaya: {m.name}")
+        if not os.path.realpath(dest).startswith(stage_real + os.sep):
+            fail(f"Entri berbahaya: {m.name}")
         if m.isdir():
             os.makedirs(dest, exist_ok=True)
         elif m.issym():
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             if os.path.lexists(dest):
                 os.remove(dest)
-            os.symlink(m.linkname, dest)
-            n += 1
+            target = m.linkname
+            if target.startswith("/" + PREFIX):  # tautan absolut Termux -> relatif di dalam stage
+                target = os.path.relpath(os.path.join(stage, target[len("/" + PREFIX):]), os.path.dirname(dest))
+            os.symlink(target, dest)
+            paths.append(rel)
         elif m.islnk():
-            src = os.path.join(stage, m.linkname[len(PREFIX):] if m.linkname.startswith(PREFIX) else m.linkname)
+            lt = m.linkname[len(PREFIX):] if m.linkname.startswith(PREFIX) else m.linkname
+            src = os.path.join(stage, lt)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             if os.path.exists(src):
                 shutil.copy2(src, dest)
-                n += 1
+                paths.append(rel)
         elif m.isfile():
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as f:
                 f.write(tf.extractfile(m).read())
-            os.chmod(dest, m.mode | 0o200)
-            n += 1
-    return n
+            os.chmod(dest, (m.mode | 0o200) & 0o777)
+            paths.append(rel)
+    return paths
 
 
-def check_elf_aarch64(path):
+# ----------------------------------------------------------------------------- npm dari registry (fallback)
+def install_npm_from_registry(stage):
+    log("Mengambil npm dari registry npm (fallback)…")
+    meta = json.loads(fetch(NPM_REGISTRY).decode())
+    tarball, integ = meta["dist"]["tarball"], meta["dist"].get("integrity", "")
+    blob = fetch(tarball)
+    if integ.startswith("sha512-"):
+        want = base64.b64decode(integ[7:])
+        if hashlib.sha512(blob).digest() != want:
+            fail("Integritas sha512 npm tidak cocok")
+    else:
+        sha1 = meta["dist"].get("shasum")
+        if not sha1 or hashlib.sha1(blob).hexdigest() != sha1:  # noqa: S324
+            fail("Checksum npm tidak cocok / tidak tersedia")
+    dest_root = os.path.join(stage, "lib", "node_modules", "npm")
+    shutil.rmtree(dest_root, ignore_errors=True)
+    os.makedirs(dest_root)
+    real = os.path.realpath(dest_root)
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+        for m in tf:
+            if not m.name.startswith("package/") or not (m.isfile() or m.isdir()):
+                continue
+            rel = m.name[len("package/"):]
+            if not rel:
+                continue
+            dest = os.path.join(dest_root, rel)
+            if not os.path.realpath(dest).startswith(real + os.sep):
+                fail(f"Entri berbahaya di tarball npm: {m.name}")
+            if m.isdir():
+                os.makedirs(dest, exist_ok=True)
+            else:
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(tf.extractfile(m).read())
+    log(f"  npm {meta['version']} dari registry")
+
+
+# ----------------------------------------------------------------------------- ELF
+def elf_info(path):
+    """Parser ELF64 little-endian minimal: machine, DT_NEEDED, DT_SONAME, RPATH/RUNPATH."""
     with open(path, "rb") as f:
-        h = f.read(20)
-    if h[:4] != b"\x7fELF":
-        raise SystemExit(f"{path} bukan ELF")
-    machine = struct.unpack("<H", h[18:20])[0]
-    if machine != 183:  # EM_AARCH64
-        raise SystemExit(f"{path} bukan arsitektur AArch64 (e_machine={machine})")
+        data = f.read()
+    if data[:4] != b"\x7fELF":
+        fail(f"{path} bukan ELF")
+    if data[4] != 2 or data[5] != 1:
+        fail(f"{path}: hanya ELF64 little-endian yang didukung")
+    machine = struct.unpack_from("<H", data, 18)[0]
+    phoff = struct.unpack_from("<Q", data, 0x20)[0]
+    phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+    loads, dyn = [], None
+    for i in range(phnum):
+        o = phoff + i * phentsize
+        p_type, _flags, p_off, p_vaddr, _pa, p_filesz, _ms, _al = struct.unpack_from("<IIQQQQQQ", data, o)
+        if p_type == 1:
+            loads.append((p_vaddr, p_off, p_filesz))
+        elif p_type == 2:
+            dyn = (p_off, p_filesz)
+    info = {"machine": machine, "needed": [], "soname": None, "rpath": [], "runpath": []}
+    if not dyn:
+        return info
+
+    def v2o(v):
+        for va, off, sz in loads:
+            if va <= v < va + sz:
+                return off + (v - va)
+        return None
+
+    entries, strtab = [], None
+    for o in range(dyn[0], dyn[0] + dyn[1], 16):
+        tag, val = struct.unpack_from("<qQ", data, o)
+        if tag == 0:
+            break
+        entries.append((tag, val))
+        if tag == 5:
+            strtab = v2o(val)
+    if strtab is None:
+        return info
+
+    def s(off):
+        end = data.index(b"\0", strtab + off)
+        return data[strtab + off:end].decode(errors="replace")
+
+    for tag, val in entries:
+        if tag == 1:
+            info["needed"].append(s(val))
+        elif tag == 14:
+            info["soname"] = s(val)
+        elif tag == 15:
+            info["rpath"] = s(val).split(":")
+        elif tag == 29:
+            info["runpath"] = s(val).split(":")
+    return info
+
+
+def native_closure(root):
+    """Periksa penutupan library native dari bin/node di pohon `root`.
+    Mengembalikan (daftar_hilang, daftar_dipakai_sistem, so_terjangkau)."""
+    libdir = os.path.join(root, "lib")
+    have = {}
+    if os.path.isdir(libdir):
+        for fn in os.listdir(libdir):
+            p = os.path.join(libdir, fn)
+            if os.path.isfile(p) and ".so" in fn:
+                have[fn] = p
+    node = os.path.join(root, "bin", "node")
+    missing, system, reached = [], set(), set()
+    queue = [("node", node)]
+    while queue:
+        who, path = queue.pop()
+        for need in elf_info(path)["needed"]:
+            if need in reached:
+                continue
+            if need in have:
+                reached.add(need)
+                queue.append((need, have[need]))
+            elif need in ANDROID_SYSTEM_LIBS:
+                system.add(need)
+            else:
+                missing.append(f"{need} (dibutuhkan oleh {who})")
+    return missing, sorted(system), sorted(reached)
+
+
+# ----------------------------------------------------------------------------- validasi
+def read_npm_version(root):
+    with open(os.path.join(root, "lib/node_modules/npm/package.json")) as f:
+        return json.load(f)["version"]
+
+
+def validate_tree(root, node_version, label):
+    """Validasi statis pohon runtime. Melempar RuntimeError_ bila ada yang tidak lolos."""
+    problems, notes = [], []
+    node = os.path.join(root, "bin", "node")
+    if not os.path.isfile(node):
+        fail(f"[{label}] bin/node tidak ada")
+    info = elf_info(node)
+    if info["machine"] != 183:
+        problems.append(f"bin/node bukan AArch64 (e_machine={info['machine']})")
+    notes.append(f"node ELF: AArch64, DT_NEEDED={info['needed']}")
+    if info["runpath"] or info["rpath"]:
+        notes.append(f"node RUNPATH/RPATH={info['runpath'] or info['rpath']} (aplikasi memakai LD_LIBRARY_PATH=<runtime>/lib)")
+
+    if node_version:
+        with open(node, "rb") as f:
+            blob = f.read()
+        if ("v" + node_version).encode() in blob or node_version.encode() in blob:
+            notes.append(f"versi node {node_version}: string versi ditemukan di dalam binary")
+        else:
+            notes.append(f"PERINGATAN: string versi {node_version} tidak ditemukan di binary node")
+
+    for rel in REQUIRED_NPM_FILES:
+        if not os.path.isfile(os.path.join(root, rel)):
+            problems.append(f"file npm wajib tidak ada: {rel}")
+    npm_ver = None
+    if not problems:
+        try:
+            npm_ver = read_npm_version(root)
+            notes.append(f"npm {npm_ver} (dari package.json)")
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"package.json npm tidak terbaca: {e}")
+
+    missing, system, reached = native_closure(root)
+    notes.append(f"library native terjangkau dari node: {reached}")
+    notes.append(f"library sistem Android yang dipakai: {system}")
+    for m in missing:
+        problems.append(f"library native HILANG: {m}")
+    if problems:
+        for n in notes:
+            log(f"  [{label}] {n}")
+        fail(f"[{label}] validasi gagal:\n  - " + "\n  - ".join(problems))
+    return npm_ver, notes
 
 
 def write_zip(stage, out):
-    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     stage_real = os.path.realpath(stage)
-    count = 0
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+    tmp = out + ".tmp"
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    count, total = 0, 0
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for root, _dirs, files in os.walk(stage):
             for fn in sorted(files):
                 p = os.path.join(root, fn)
@@ -198,48 +420,120 @@ def write_zip(stage, out):
                 info.compress_type = zipfile.ZIP_DEFLATED
                 info.external_attr = (0o755 if arc.startswith("bin/") else 0o644) << 16
                 with open(real, "rb") as f:
-                    z.writestr(info, f.read())
+                    data = f.read()
+                z.writestr(info, data)
                 count += 1
-    return count
+                total += len(data)
+    return tmp, count, total
+
+
+def verify_zip(tmp_zip, node_version):
+    """Buka ulang ZIP ke direktori sementara dan validasi isinya."""
+    chk = tempfile.mkdtemp(prefix="verify-zip-")
+    try:
+        with zipfile.ZipFile(tmp_zip) as z:
+            bad = z.testzip()
+            if bad:
+                fail(f"ZIP rusak: {bad}")
+            z.extractall(chk)
+        return validate_tree(chk, node_version, "isi ZIP")
+    finally:
+        shutil.rmtree(chk, ignore_errors=True)
+
+
+def summarize(stage):
+    tops = {}
+    for root, _d, files in os.walk(stage):
+        for fn in files:
+            p = os.path.join(root, fn)
+            if os.path.isfile(p):
+                top = os.path.relpath(p, stage).split(os.sep)
+                key = "/".join(top[:2]) if top[0] == "lib" and len(top) > 2 else top[0]
+                tops[key] = tops.get(key, 0) + os.path.getsize(p)
+    for k, v in sorted(tops.items(), key=lambda kv: -kv[1])[:12]:
+        log(f"    {v / 1048576:8.1f} MB  {k}")
+
+
+# ----------------------------------------------------------------------------- main
+def build(args):
+    log(f"Mengunduh indeks: {INDEX}")
+    index = parse_packages(fetch(INDEX).decode("utf-8", "replace"))
+    if args.package not in index:
+        fail(f"Paket {args.package} tidak ada di indeks Termux")
+    roots = [args.package]
+    if "npm" in index:
+        roots.append("npm")
+    else:
+        log("Paket 'npm' tidak ada di indeks Termux -> npm akan diambil dari registry npm")
+    pkgs = resolve(roots, index, args.package)
+    log("Paket yang akan dipasang: " + ", ".join(pkgs))
+    node_version = re.sub(r"^\d+:", "", index[args.package].get("Version", "")).split("-")[0]
+
+    stage = tempfile.mkdtemp(prefix="node-runtime-")
+    try:
+        for name in pkgs:
+            meta = index[name]
+            log(f"- {name} {meta.get('Version', '')}")
+            blob = fetch(f"{REPO}/{meta['Filename']}")
+            want = meta.get("SHA256")
+            if want and hashlib.sha256(blob).hexdigest() != want:
+                fail(f"SHA256 tidak cocok untuk {name}")
+            paths = extract_deb(blob, stage)
+            hits = [p for p in paths if "npm-cli.js" in p or p in ("bin/node", "bin/npm")]
+            log(f"    {len(paths)} berkas; penting: {hits[:4] or '-'}")
+
+        # npm: pakai Termux bila lengkap, jika tidak ambil dari registry.
+        missing_npm = [r for r in REQUIRED_NPM_FILES if not os.path.isfile(os.path.join(stage, r))]
+        if missing_npm:
+            log("Struktur npm dari Termux tidak lengkap, kurang: " + ", ".join(missing_npm))
+            install_npm_from_registry(stage)
+
+        log("Ukuran terbesar di runtime:")
+        summarize(stage)
+        validate_tree(stage, node_version, "stage")
+
+        tmp, count, total = write_zip(stage, args.out)
+        try:
+            npm_ver, notes = verify_zip(tmp, node_version)
+        except Exception:
+            os.remove(tmp)
+            raise
+        os.replace(tmp, args.out)
+        size = os.path.getsize(args.out) / 1048576
+        summary = [
+            f"node {node_version} (Termux {args.package}), npm {npm_ver}",
+            f"{count} berkas, {total / 1048576:.0f} MB tidak terkompresi, ZIP {size:.1f} MB",
+        ] + notes
+        for line in summary:
+            log("  OK " + line)
+        sm = os.environ.get("GITHUB_STEP_SUMMARY")
+        if sm:
+            with open(sm, "a") as f:
+                f.write("### Runtime Node.js (validasi statis)\n" + "\n".join(f"- {s}" for s in summary) +
+                        "\n\n> Eksekusi `node --version` sesungguhnya dilakukan di perangkat (Settings > Runtime).\n")
+        log(f"SELESAI: {args.out}")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="runtime-bundle/assets/node-runtime.zip")
     ap.add_argument("--package", default="nodejs-lts", help="nodejs-lts (default) atau nodejs")
+    ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
-
-    log(f"Mengunduh indeks: {INDEX}")
-    index = parse_packages(fetch(INDEX).decode("utf-8", "replace"))
-    if args.package not in index:
-        raise SystemExit(f"Paket {args.package} tidak ada di indeks Termux")
-    pkgs = resolve([args.package], index)
-    log("Paket yang akan dipasang: " + ", ".join(pkgs))
-
-    stage = tempfile.mkdtemp(prefix="node-runtime-")
+    if args.self_test:
+        import runpy
+        here = os.path.dirname(os.path.abspath(__file__))
+        runpy.run_path(os.path.join(here, "test_fetch_node_runtime.py"), run_name="__main__")
+        return
     try:
-        for name in pkgs:
-            meta = index[name]
-            url = f"{REPO}/{meta['Filename']}"
-            log(f"- {name} {meta.get('Version', '')}")
-            blob = fetch(url)
-            want = meta.get("SHA256")
-            if want and hashlib.sha256(blob).hexdigest() != want:
-                raise SystemExit(f"SHA256 tidak cocok untuk {name}")
-            extract_deb(blob, stage)
-
-        node = os.path.join(stage, "bin", "node")
-        npm = os.path.join(stage, "lib", "node_modules", "npm", "bin", "npm-cli.js")
-        if not os.path.isfile(node):
-            raise SystemExit("bin/node tidak ditemukan setelah ekstraksi")
-        if not os.path.isfile(npm):
-            raise SystemExit("npm-cli.js tidak ditemukan; gunakan paket yang menyertakan npm")
-        check_elf_aarch64(os.path.realpath(node))
-        n = write_zip(stage, args.out)
-        size = os.path.getsize(args.out) / 1048576
-        log(f"OK: {args.out} ({n} file, {size:.1f} MB)")
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+        build(args)
+    except RuntimeError_ as e:
+        log(f"GAGAL: {e}")
+        if os.path.exists(args.out):
+            os.remove(args.out)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
