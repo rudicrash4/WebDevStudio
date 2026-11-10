@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.cxx/
+*.apk
+*.aab
+# Runtime bundle besar (Node.js) disiapkan oleh CI / developer, bukan di-commit
+runtime-bundle/jniLibs/
+runtime-bundle/assets/

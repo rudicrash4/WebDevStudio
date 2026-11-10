@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebView Compatibility</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;margin:0;padding:16px}
+  h1{font-size:18px;margin:0 0 4px} p.s{margin:0 0 14px;color:#8b949e;font-size:13px}
+  .row{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;margin:6px 0;border:1px solid #30363d;border-radius:10px;background:#161b22}
+  .b{font:700 11px monospace;padding:3px 7px;border-radius:6px;min-width:44px;text-align:center}
+  .PASS{background:#1f6f3a;color:#fff}.FAIL{background:#9a2a2a;color:#fff}.WAIT{background:#444;color:#fff}.MANUAL{background:#7a5c00;color:#fff}
+  .n{font-weight:600;font-size:14px}.d{font-size:12px;color:#8b949e;word-break:break-word}
+  button{background:#238636;color:#fff;border:0;border-radius:8px;padding:8px 12px;font-size:13px}
+  #sum{margin:10px 0;font:600 14px monospace}
+</style>
+</head>
+<body>
+<h1>WebView Compatibility Test</h1>
+<p class="s">Origin: <span id="origin"></span> &middot; UA: <span id="ua"></span></p>
+<div id="sum">Menjalankan…</div>
+<div id="list"></div>
+<script>
+document.getElementById('origin').textContent = location.origin;
+document.getElementById('ua').textContent = navigator.userAgent.replace(/^Mozilla\/5.0 /,'').slice(0,90);
+var rows = {};
+function add(id, name){
+  var r = document.createElement('div'); r.className='row';
+  r.innerHTML = '<span class="b WAIT">…</span><div><div class="n"></div><div class="d"></div></div>';
+  r.querySelector('.n').textContent = name; document.getElementById('list').appendChild(r); rows[id]=r;
+}
+function set(id, st, detail){
+  var r = rows[id]; var b = r.querySelector('.b'); b.className='b '+st; b.textContent=st;
+  r.querySelector('.d').textContent = detail||''; console.log('[compat] '+id+' '+st+' '+(detail||''));
+  summary();
+}
+function summary(){
+  var c={PASS:0,FAIL:0,MANUAL:0,WAIT:0};
+  Object.keys(rows).forEach(function(k){ c[rows[k].querySelector('.b').textContent]++; });
+  document.getElementById('sum').textContent = 'PASS '+c.PASS+'  FAIL '+c.FAIL+'  MANUAL '+c.MANUAL+'  WAIT '+c.WAIT;
+}
+var tests = [
+ ['js','JavaScript', function(){ return 'ES'+(typeof Symbol!=='undefined'&&typeof Promise!=='undefined'?'6+':'5'); }],
+ ['secure','Secure context (localhost)', function(){ if(!window.isSecureContext) throw 'isSecureContext=false'; return location.origin; }],
+ ['esm','ES Modules (import dinamis)', async function(){ var m = await import('./mod.js'); if(m.answer!==42) throw 'nilai salah'; return 'import() OK'; }],
+ ['canvas','Canvas 2D', function(){ var c=document.createElement('canvas'); var x=c.getContext('2d'); x.fillStyle='#f00'; x.fillRect(0,0,1,1); var p=x.getImageData(0,0,1,1).data; if(p[0]!==255) throw 'pixel salah'; return 'getImageData OK'; }],
+ ['webgl','WebGL', function(){ var c=document.createElement('canvas'); var g=c.getContext('webgl2')||c.getContext('webgl'); if(!g) throw 'context null'; var e=g.getExtension('WEBGL_debug_renderer_info'); return (c.getContext('webgl2')?'WebGL2 ':'WebGL1 ')+(e?g.getParameter(e.UNMASKED_RENDERER_WEBGL):g.getParameter(g.VERSION)); }],
+ ['wasm','WebAssembly (compile + MIME)', async function(){ var r=await fetch('empty.wasm'); var ct=r.headers.get('content-type'); var m=await WebAssembly.instantiateStreaming(r); if(!m.instance) throw 'gagal'; return 'instantiateStreaming OK, '+ct; }],
+ ['idb','IndexedDB', function(){ return new Promise(function(res,rej){ var q=indexedDB.open('wds-compat',1); q.onupgradeneeded=function(){ q.result.createObjectStore('s'); }; q.onsuccess=function(){ var tx=q.result.transaction('s','readwrite'); tx.objectStore('s').put(1,'k'); tx.oncomplete=function(){ q.result.close(); res('tulis OK'); }; tx.onerror=function(){ rej('tx error'); }; }; q.onerror=function(){ rej('open error'); }; }); }],
+ ['cache','Cache API', async function(){ var c=await caches.open('wds-compat'); await c.put('/x', new Response('ok')); var r=await c.match('/x'); return 'put/match '+(await r.text()); }],
+ ['sw','Service Worker', async function(){ if(!('serviceWorker' in navigator)) throw 'tidak ada'; var reg=await navigator.serviceWorker.register('sw.js'); await navigator.serviceWorker.ready; return 'scope '+reg.scope; }],
+ ['ws','WebSocket (API)', function(){ if(typeof WebSocket==='undefined') throw 'tidak ada'; return 'tersedia'; }],
+ ['audio','Web Audio API', function(){ var A=window.AudioContext||window.webkitAudioContext; if(!A) throw 'tidak ada'; var c=new A(); var s=c.state; c.close(); return 'state '+s; }],
+ ['video','Video (codec)', function(){ var v=document.createElement('video'); var r={mp4:v.canPlayType('video/mp4; codecs="avc1.42E01E"'),webm:v.canPlayType('video/webm; codecs="vp9"')}; if(!r.mp4&&!r.webm) throw 'tidak ada codec'; return JSON.stringify(r); }],
+ ['pointer','Pointer Events', function(){ if(!window.PointerEvent) throw 'tidak ada'; return 'tersedia'; }],
+ ['touch','Multitouch', function(){ var n=navigator.maxTouchPoints; if(!(n>1)) throw 'maxTouchPoints='+n; return 'maxTouchPoints='+n; }],
+ ['fs','Fullscreen API', function(){ if(!document.fullscreenEnabled && !document.webkitFullscreenEnabled) throw 'dinonaktifkan'; return 'tersedia'; }]
+];
+tests.forEach(function(t){ add(t[0],t[1]); });
+add('picker','File Picker');
+set('picker','MANUAL','Ketuk tombol lalu pilih file.');
+var d=document.createElement('div'); d.innerHTML='<input type="file" id="f"> <button onclick="document.getElementById(\'f\').click()">Pilih file</button>';
+rows['picker'].lastChild.appendChild(d);
+document.getElementById('f').onchange=function(e){ set('picker', e.target.files.length?'PASS':'FAIL', (e.target.files[0]||{}).name||'tidak ada file'); };
+tests.forEach(async function(t){ try{ var r=await t[2](); set(t[0],'PASS',String(r)); }catch(e){ set(t[0],'FAIL',String(e&&e.message||e)); } });
+</script>
+</body>
+</html>
