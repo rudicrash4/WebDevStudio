@@ -19,8 +19,8 @@ android {
         // (esbuild, dll.) dari node_modules, sehingga butuh targetSdk 28 (pendekatan yang sama
         // dengan Termux). Konsekuensi: tidak cocok untuk Play Store, tetapi aman untuk sideload APK.
         targetSdk = 28
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.2.1"
     }
 
     buildTypes {
@@ -46,8 +46,8 @@ android {
     }
 
     androidResources {
-        // node-runtime.zip sudah terkompresi; simpan apa adanya agar APK cepat dibangun/dipasang.
-        noCompress += "zip"
+        // node-runtime.tar.xz sudah terkompresi (xz); simpan apa adanya agar APK cepat dibangun/dipasang.
+        noCompress += listOf("zip", "xz")
     }
 
     lint {
@@ -80,4 +80,5 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.tukaani:xz:1.10")
 }

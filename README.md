@@ -78,7 +78,7 @@ Pendekatan yang dipakai: binary `node` + `npm` dari repositori paket Termux, dij
 terpisah (bukan `nodejs-mobile`). Alasannya: `nodejs-mobile` hanya satu instance in-process dan tidak
 menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` + Vite sungguhan.
 
-- **CI** menjalankan `scripts/fetch-node-runtime.py` → `runtime-bundle/assets/node-runtime.zip` → masuk ke APK sebagai aset.
+- **CI** menjalankan `scripts/fetch-node-runtime.py` → `runtime-bundle/assets/node-runtime.tar.xz` (tar + xz, dipangkas dari docs/man/corepack; ±35% lebih kecil dari ZIP) → masuk ke APK sebagai aset. Aplikasi mengekstrak tar.xz/ZIP (deteksi otomatis) dengan ±16 MB RAM.
   Termux memisahkan `npm` dari `nodejs-lts`, jadi **kedua paket dipasang** (alternatif `nodejs | nodejs-lts` tidak menarik Node kedua).
   npm dari Termux diuji dengan `node npm-cli.js --version` memakai node runner CI (npm adalah JS murni); bila gagal/tidak lengkap, versi npm yang kompatibel dengan Node tersebut diambil dari registry (sha512 diverifikasi) dan diuji ulang.
 - **Validasi sebelum ZIP dianggap berhasil** (statis, karena runner x86_64 tidak bisa menjalankan binary arm64 bionic):
@@ -87,7 +87,7 @@ menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` +
   yang terjangkau harus ada di bundle atau termasuk library sistem Android); lalu ZIP dibuka ulang dan semuanya dicek lagi.
   Gagal di salah satunya → tidak ada ZIP, skrip exit 1, build APK **tetap lanjut** tanpa runtime (Static Hosting berfungsi).
   `node --version` / `npm --version` yang sesungguhnya dijalankan di perangkat (Settings → Runtime Node.js).
-- Uji logika skrip: `python3 scripts/fetch-node-runtime.py --self-test` (20 pengecekan offline; juga dijalankan di CI).
+- Uji logika skrip: `python3 scripts/fetch-node-runtime.py --self-test` (23 pengecekan offline; juga dijalankan di CI).
 - Di **Settings → Runtime Node.js**: *Pasang dari APK*, atau *Impor ZIP* (ZIP berisi `bin/node`, `lib/…`).
   Setelah dipasang, aplikasi menjalankan `node --version` dan `npm --version`; baru dianggap **SIAP** jika berhasil.
 - `targetSdk = 28` **disengaja**: Android 10+ (targetSdk ≥ 29) melarang `exec` file di direktori data aplikasi,
@@ -128,6 +128,9 @@ Tidak ada file lokal yang dibutuhkan; Gradle Wrapper (8.14.3) disertakan.
 ```bash
 ./gradlew assembleDebug        # hasil: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+Node di Android: build Termux mencoba membaca `/data/data/com.termux/.../openssl.cnf` (ditolak izin → Node exit 13).
+Aplikasi mengarahkan `OPENSSL_CONF` ke berkas kosong miliknya sendiri, serta `OPENSSL_MODULES`/`SSL_CERT_FILE` ke runtime.
 
 ## GitHub
 

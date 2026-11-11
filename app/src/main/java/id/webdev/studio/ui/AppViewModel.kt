@@ -267,6 +267,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var ghResult by mutableStateOf<Result<UploadResult>?>(null)
         private set
+    var ghError by mutableStateOf<String?>(null)
+        private set
     @Volatile private var ghCancel = false
 
     fun ghInit() { if (ghLogin == null && app.vault.load() != null) ghLogin = app.vault.login }
@@ -277,13 +279,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val t = token.trim()
         if (t.isEmpty()) { toast = "Token kosong"; return }
         viewModelScope.launch {
-            ghBusy = "Memverifikasi token…"
+            ghBusy = "Memverifikasi token…"; ghError = null
             try {
                 val login = withContext(Dispatchers.IO) { GitHubClient(t).login() }
                 app.vault.save(t); app.vault.login = login; ghLogin = login
                 toast = "Terhubung sebagai $login"
                 ghLoadRepos()
-            } catch (e: Throwable) { toast = e.message ?: "Gagal" }
+            } catch (e: Throwable) { ghError = "${e.javaClass.simpleName}: ${e.message}"; toast = "Gagal menghubungkan GitHub" }
             ghBusy = null
         }
     }

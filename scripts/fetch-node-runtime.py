@@ -584,6 +584,71 @@ def write_zip(stage, out):
     return tmp, count, total
 
 
+def prune_stage(stage):
+    """Buang berkas yang tidak dibutuhkan saat runtime (dokumentasi, corepack) untuk memperkecil APK."""
+    removed = 0
+    for rel in ("lib/node_modules/npm/docs", "lib/node_modules/npm/man", "lib/node_modules/npm/changelogs",
+                "lib/node_modules/corepack", "bin/corepack"):
+        p = os.path.join(stage, rel)
+        if os.path.isdir(p) and not os.path.islink(p):
+            removed += sum(os.path.getsize(os.path.join(r, f)) for r, _d, fs in os.walk(p) for f in fs)
+            shutil.rmtree(p)
+        elif os.path.lexists(p):
+            os.remove(p)
+    for root, _d, files in os.walk(stage):
+        for f in files:
+            if f.endswith(".map") or f.endswith(".md") and f.upper() != "README.MD" and "npm" in root:
+                try:
+                    fp = os.path.join(root, f); removed += os.path.getsize(fp); os.remove(fp)
+                except OSError:
+                    pass
+    log(f"  pruning: {removed / 1048576:.1f} MB dibuang (docs/man/corepack/sourcemap)")
+
+
+def write_txz(stage, out):
+    """tar (GNU) + xz (LZMA2 dict 16 MB; dekompresi di aplikasi memakai ~16 MB RAM)."""
+    stage_real = os.path.realpath(stage)
+    tmp = out + ".tmp"
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    count, total = 0, 0
+    filt = [{"id": lzma.FILTER_LZMA2, "preset": 9 | lzma.PRESET_EXTREME, "dict_size": 16 << 20}]
+    with lzma.LZMAFile(tmp, "wb", format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32, filters=filt) as xz:
+        with tarfile.open(fileobj=xz, mode="w", format=tarfile.GNU_FORMAT) as tf:
+            paths = []
+            for root, _dirs, files in os.walk(stage):
+                for fn in files:
+                    paths.append(os.path.join(root, fn))
+            # urutkan per ekstensi agar data serupa berdekatan (rasio kompresi lebih baik)
+            paths.sort(key=lambda p: (os.path.splitext(p)[1], p))
+            for p in paths:
+                real = os.path.realpath(p)
+                if not os.path.isfile(real) or not real.startswith(stage_real + os.sep):
+                    continue
+                arc = os.path.relpath(p, stage).replace(os.sep, "/")
+                ti = tarfile.TarInfo(arc)
+                ti.size = os.path.getsize(real)
+                ti.mode = 0o755 if arc.startswith("bin/") else 0o644
+                ti.mtime = 0
+                with open(real, "rb") as f:
+                    tf.addfile(ti, f)
+                count += 1
+                total += ti.size
+    return tmp, count, total
+
+
+def verify_txz(tmp_txz, node_version):
+    chk = tempfile.mkdtemp(prefix="verify-txz-")
+    try:
+        with tarfile.open(tmp_txz, "r:xz") as tf:
+            for m in tf:
+                if not m.isfile() or m.name.startswith("/") or ".." in m.name.split("/"):
+                    fail(f"entri tar tidak valid: {m.name}")
+            tf.extractall(chk, filter="data") if sys.version_info >= (3, 12) else tf.extractall(chk)
+        return validate_tree(chk, node_version, "isi tar.xz")
+    finally:
+        shutil.rmtree(chk, ignore_errors=True)
+
+
 def verify_zip(tmp_zip, node_version):
     """Buka ulang ZIP ke direktori sementara dan validasi isinya."""
     chk = tempfile.mkdtemp(prefix="verify-zip-")
@@ -650,9 +715,12 @@ def build(args):
         summarize(stage)
         validate_tree(stage, node_version, "stage")
 
-        tmp, count, total = write_zip(stage, args.out)
+        prune_stage(stage)
+        validate_tree(stage, node_version, "stage (setelah pruning)")
+        as_zip = args.out.endswith(".zip")
+        tmp, count, total = (write_zip if as_zip else write_txz)(stage, args.out)
         try:
-            npm_ver, notes = verify_zip(tmp, node_version)
+            npm_ver, notes = (verify_zip if as_zip else verify_txz)(tmp, node_version)
         except Exception:
             os.remove(tmp)
             raise
@@ -660,7 +728,7 @@ def build(args):
         size = os.path.getsize(args.out) / 1048576
         summary = [
             f"node {node_version} (Termux {args.package}), npm {npm_ver}",
-            f"{count} berkas, {total / 1048576:.0f} MB tidak terkompresi, ZIP {size:.1f} MB",
+            f"{count} berkas, {total / 1048576:.0f} MB tidak terkompresi, arsip {size:.1f} MB",
         ] + notes
         for line in summary:
             log("  OK " + line)
@@ -676,7 +744,7 @@ def build(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="runtime-bundle/assets/node-runtime.zip")
+    ap.add_argument("--out", default="runtime-bundle/assets/node-runtime.tar.xz")
     ap.add_argument("--package", default="nodejs-lts", help="nodejs-lts (default) atau nodejs")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()

@@ -233,21 +233,21 @@ private fun ProjectCard(
                 info?.status == ServerStatus.NEEDS_DEPS -> {
                     Text("DEPENDENCIES NOT INSTALLED", color = Dev.Amber, fontFamily = Dev.Mono, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
-                    Button(onClick = { sm.installDependencies(p) }, modifier = Modifier.fillMaxWidth()) { Text("INSTALL DEPENDENCIES") }
+                    Button(onClick = { sm.installDependencies(p) }, modifier = Modifier.fillMaxWidth()) { androidx.compose.material3.Icon(AppIcons.Download, "Install dependencies") }
                 }
                 info?.status == ServerStatus.INSTALLING -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(10.dp)); Text("npm install berjalan…", color = Dev.Muted, fontSize = 13.sp)
                         Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { sm.stop(p.id) }) { Text("BATAL", color = Dev.Red) }
+                        androidx.compose.material3.IconButton(onClick = { sm.stop(p.id) }) { androidx.compose.material3.Icon(AppIcons.Stop, "Batal", tint = Dev.Red) }
                     }
                 }
                 active -> {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { onPreview(p) }, enabled = info?.status == ServerStatus.RUNNING, modifier = Modifier.weight(1f)) { Text("PREVIEW") }
-                        OutlinedButton(onClick = { sm.restart(p) }, modifier = Modifier.weight(1f)) { Text("RESTART") }
-                        Button(onClick = { sm.stop(p.id) }, colors = ButtonDefaults.buttonColors(containerColor = Dev.Red, contentColor = androidx.compose.ui.graphics.Color.White), modifier = Modifier.weight(1f)) { Text("STOP") }
+                        Button(onClick = { onPreview(p) }, enabled = info?.status == ServerStatus.RUNNING, modifier = Modifier.weight(1f)) { androidx.compose.material3.Icon(AppIcons.Preview, "Preview") }
+                        OutlinedButton(onClick = { sm.restart(p) }, modifier = Modifier.weight(1f)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Refresh, "Restart") }
+                        Button(onClick = { sm.stop(p.id) }, colors = ButtonDefaults.buttonColors(containerColor = Dev.Red, contentColor = androidx.compose.ui.graphics.Color.White), modifier = Modifier.weight(1f)) { androidx.compose.material3.Icon(AppIcons.Stop, "Stop") }
                     }
                 }
                 else -> {
@@ -255,18 +255,18 @@ private fun ProjectCard(
                         onClick = { vm.touch(p); sm.start(p) },
                         enabled = p.hostingMode != HostingMode.UNSUPPORTED,
                         modifier = Modifier.fillMaxWidth()
-                    ) { Text("START HOSTING", fontFamily = Dev.Mono, fontWeight = FontWeight.Bold) }
+                    ) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.PlayArrow, "Start hosting") }
                 }
             }
             Spacer(Modifier.height(6.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { onOpen(p) }) { Text("Open") }
-                TextButton(onClick = onSettings) { Text("Settings") }
-                TextButton(onClick = { ghOpen = true }) { Text("GitHub") }
+                androidx.compose.material3.IconButton(onClick = { onOpen(p) }) { androidx.compose.material3.Icon(AppIcons.Folder, "Open", tint = Dev.Blue) }
+                androidx.compose.material3.IconButton(onClick = onSettings) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Settings, "Settings", tint = Dev.Blue) }
+                androidx.compose.material3.IconButton(onClick = { ghOpen = true }) { androidx.compose.material3.Icon(AppIcons.Upload, "Unggah ke GitHub", tint = Dev.Blue) }
                 if (p.hostingMode == HostingMode.DEV || p.hostingMode == HostingMode.BACKEND)
-                    TextButton(onClick = { sm.installDependencies(p) }, enabled = !active) { Text("npm install") }
+                    androidx.compose.material3.IconButton(onClick = { sm.installDependencies(p) }, enabled = !active) { androidx.compose.material3.Icon(AppIcons.Download, "npm install", tint = if (active) Dev.Muted else Dev.Blue) }
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = onRemove) { Text("Remove", color = Dev.Red) }
+                androidx.compose.material3.IconButton(onClick = onRemove) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Delete, "Remove", tint = Dev.Red) }
             }
         }
     }

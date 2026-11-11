@@ -206,4 +206,18 @@ open(d + "/bin/npm-cli.js", "w").write("throw new Error('boom')")
 check("smoke_npm mendeteksi gagal", f.smoke_npm(d, hn)[0] is False if hn else True)
 check("smoke_npm tanpa node dilewati", f.smoke_npm(d, None)[0] is None)
 
+# ---- 7. tar.xz + pruning ---------------------------------------------------------------
+st3 = tempfile.mkdtemp()
+for rel, data in {"bin/node": b"\x7fELF" * 100, "lib/x.so": b"y" * 5000, "lib/node_modules/npm/docs/a.md": b"doc",
+                  "lib/node_modules/npm/" + "d/" * 60 + "f.js": b"//"}.items():
+    pth = os.path.join(st3, rel); os.makedirs(os.path.dirname(pth), exist_ok=True); open(pth, "wb").write(data)
+f.prune_stage(st3)
+check("prune membuang docs npm", not os.path.exists(os.path.join(st3, "lib/node_modules/npm/docs")))
+out3 = os.path.join(tempfile.mkdtemp(), "r.tar.xz")
+tmp3, c3, _t3 = f.write_txz(st3, out3)
+with tarfile.open(tmp3, "r:xz") as tf3:
+    names3 = tf3.getnames()
+check("tar.xz memuat 3 berkas termasuk path > 100 karakter", c3 == 3 and any(len(n) > 100 for n in names3))
+check("bin/node bermode 755", [m.mode for m in tarfile.open(tmp3, "r:xz") if m.name == "bin/node"] == [0o755])
+
 print(f"SEMUA LULUS ({ok} pengecekan)")

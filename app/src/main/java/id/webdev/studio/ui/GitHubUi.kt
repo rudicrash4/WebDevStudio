@@ -74,6 +74,7 @@ fun GitHubCard(vm: AppViewModel) {
                     }) { Text("Buat token") }
                 }
             }
+            vm.ghError?.let { Spacer(Modifier.height(6.dp)); Text(it, color = Dev.Red, fontSize = 12.sp, fontFamily = Dev.Mono) }
             vm.ghBusy?.let {
                 Spacer(Modifier.height(6.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {

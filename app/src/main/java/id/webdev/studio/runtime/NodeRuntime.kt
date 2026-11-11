@@ -36,9 +36,10 @@ class NodeRuntime(private val ctx: Context) {
 
     val primaryAbi: String get() = Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
 
-    fun bundledAvailable(): Boolean = try {
-        ctx.assets.open(ASSET_NAME).close(); true
-    } catch (e: Exception) { false }
+    private fun bundledAssetName(): String? =
+        listOf(ASSET_XZ, ASSET_ZIP).firstOrNull { n -> try { ctx.assets.open(n).close(); true } catch (e: Exception) { false } }
+
+    fun bundledAvailable(): Boolean = bundledAssetName() != null
 
     /** Environment untuk semua proses Node (npm, vite, backend). */
     fun environment(extra: Map<String, String> = emptyMap()): Map<String, String> {
@@ -59,6 +60,13 @@ class NodeRuntime(private val ctx: Context) {
         env["NO_COLOR"] = "1"
         env["BROWSER"] = "none"
         env["CI"] = "false"
+        // Build Termux memuat konfigurasi OpenSSL dari /data/data/com.termux/... (tidak boleh diakses aplikasi ini;
+        // Node keluar dengan kode 13). Arahkan ke berkas milik kita sendiri.
+        val ossl = File(homeDir, "openssl.cnf")
+        if (!ossl.exists()) runCatching { ossl.writeText("# WebDev Studio: konfigurasi OpenSSL kosong\n") }
+        env["OPENSSL_CONF"] = ossl.absolutePath
+        File(root, "lib/ossl-modules").takeIf { it.isDirectory }?.let { env["OPENSSL_MODULES"] = it.absolutePath }
+        File(root, "etc/tls/cert.pem").takeIf { it.isFile }?.let { env["SSL_CERT_FILE"] = it.absolutePath }
         env.putAll(extra)
         return env
     }
@@ -113,7 +121,7 @@ class NodeRuntime(private val ctx: Context) {
     /** Pasang dari aset APK. */
     fun installFromAsset(onProgress: (String) -> Unit): Status {
         if (!bundledAvailable()) return check()
-        ctx.assets.open(ASSET_NAME).use { extract(it, onProgress) }
+        ctx.assets.open(bundledAssetName()!!).use { extract(it, onProgress) }
         return check()
     }
 
@@ -126,33 +134,19 @@ class NodeRuntime(private val ctx: Context) {
 
     fun uninstall() { root.deleteRecursively() }
 
+    /** Deteksi format dari magic bytes: xz (tar.xz) atau zip. */
     private fun extract(input: java.io.InputStream, onProgress: (String) -> Unit) {
+        val bin = java.io.BufferedInputStream(input, 256 * 1024)
+        bin.mark(8)
+        val magic = ByteArray(6); var got = 0
+        while (got < 6) { val r = bin.read(magic, got, 6 - got); if (r < 0) break; got += r }
+        bin.reset()
+        val isXz = got >= 6 && magic[0] == 0xFD.toByte() && magic[1] == 0x37.toByte() && magic[2] == 0x7A.toByte() &&
+            magic[3] == 0x58.toByte() && magic[4] == 0x5A.toByte()
         val tmp = File(ctx.filesDir, "runtime/usr.new")
         tmp.deleteRecursively(); tmp.mkdirs()
         val canon = tmp.canonicalFile
-        var n = 0
-        ZipInputStream(input.buffered(256 * 1024)).use { zin ->
-            var e = zin.nextEntry
-            val buf = ByteArray(128 * 1024)
-            while (e != null) {
-                val name = e.name.replace('\\', '/').trimStart('/')
-                if (name.isNotEmpty() && !name.split('/').contains("..")) {
-                    val target = File(canon, name).canonicalFile
-                    if (!target.path.startsWith(canon.path + File.separator) && target.path != canon.path)
-                        throw SecurityException("Entri ZIP berbahaya: ${e.name}")
-                    if (e.isDirectory) target.mkdirs()
-                    else {
-                        target.parentFile?.mkdirs()
-                        FileOutputStream(target).use { out ->
-                            while (true) { val r = zin.read(buf); if (r < 0) break; out.write(buf, 0, r) }
-                        }
-                        if (name.startsWith("bin/")) target.setExecutable(true, false)
-                        if (++n % 200 == 0) onProgress("Mengekstrak runtime… $n file")
-                    }
-                }
-                zin.closeEntry(); e = zin.nextEntry
-            }
-        }
+        val n = if (isXz) extractTarXz(bin, canon, onProgress) else extractZip(bin, canon, onProgress)
         File(canon, "bin").listFiles()?.forEach { it.setExecutable(true, false) }
         root.deleteRecursively()
         root.parentFile?.mkdirs()
@@ -160,7 +154,83 @@ class NodeRuntime(private val ctx: Context) {
         onProgress("Selesai mengekstrak $n file")
     }
 
+    private fun safeTarget(canon: File, rawName: String): File? {
+        val name = rawName.replace('\\', '/').trimStart('/')
+        if (name.isEmpty() || name.split('/').contains("..")) return null
+        val target = File(canon, name).canonicalFile
+        if (!target.path.startsWith(canon.path + File.separator)) throw SecurityException("Entri berbahaya: $rawName")
+        return target
+    }
+
+    private fun extractTarXz(input: java.io.InputStream, canon: File, onProgress: (String) -> Unit): Int {
+        var n = 0
+        val tin = org.tukaani.xz.XZInputStream(input)
+        val hdr = ByteArray(512)
+        val buf = ByteArray(128 * 1024)
+        fun readFully(b: ByteArray, len: Int): Boolean {
+            var o = 0
+            while (o < len) { val r = tin.read(b, o, len - o); if (r < 0) return false; o += r }
+            return true
+        }
+        fun skip(count: Long) { var left = count; while (left > 0) { val r = tin.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (r < 0) break; left -= r } }
+        fun str(off: Int, len: Int): String { var e = off; while (e < off + len && hdr[e] != 0.toByte()) e++; return String(hdr, off, e - off, Charsets.UTF_8) }
+        fun octal(off: Int, len: Int): Long = str(off, len).trim().ifEmpty { "0" }.toLong(8)
+        var longName: String? = null
+        while (readFully(hdr, 512)) {
+            if (hdr.all { it == 0.toByte() }) break
+            var name = str(0, 100)
+            if (str(257, 5) == "ustar" && hdr[262] != ' '.code.toByte()) { val pre = str(345, 155); if (pre.isNotEmpty()) name = "$pre/$name" }
+            val size = octal(124, 12)
+            val type = hdr[156].toInt().toChar()
+            val padded = (size + 511) / 512 * 512
+            when (type) {
+                'L' -> { val b = ByteArray(size.toInt()); readFully(b, b.size); skip(padded - size); longName = String(b, Charsets.UTF_8).trimEnd('\u0000') }
+                '0', '\u0000' -> {
+                    val target = safeTarget(canon, longName ?: name); longName = null
+                    if (target == null) { skip(padded) } else {
+                        target.parentFile?.mkdirs()
+                        FileOutputStream(target).use { out ->
+                            var left = size
+                            while (left > 0) { val r = tin.read(buf, 0, minOf(buf.size.toLong(), left).toInt()); if (r < 0) throw java.io.EOFException("arsip terpotong"); out.write(buf, 0, r); left -= r }
+                        }
+                        skip(padded - size)
+                        if (target.path.startsWith(canon.path + "/bin/")) target.setExecutable(true, false)
+                        if (++n % 200 == 0) onProgress("Mengekstrak runtime… $n file")
+                    }
+                }
+                '5' -> { safeTarget(canon, longName ?: name)?.mkdirs(); longName = null }
+                else -> { longName = null; skip(padded) }
+            }
+        }
+        return n
+    }
+
+    private fun extractZip(input: java.io.InputStream, canon: File, onProgress: (String) -> Unit): Int {
+        var n = 0
+        ZipInputStream(input).use { zin ->
+            var e = zin.nextEntry
+            val buf = ByteArray(128 * 1024)
+            while (e != null) {
+                val target = safeTarget(canon, e.name)
+                if (target != null) {
+                    if (e.isDirectory) target.mkdirs()
+                    else {
+                        target.parentFile?.mkdirs()
+                        FileOutputStream(target).use { out ->
+                            while (true) { val r = zin.read(buf); if (r < 0) break; out.write(buf, 0, r) }
+                        }
+                        if (target.path.startsWith(canon.path + "/bin/")) target.setExecutable(true, false)
+                        if (++n % 200 == 0) onProgress("Mengekstrak runtime… $n file")
+                    }
+                }
+                zin.closeEntry(); e = zin.nextEntry
+            }
+        }
+        return n
+    }
+
     companion object {
-        const val ASSET_NAME = "node-runtime.zip"
+        const val ASSET_XZ = "node-runtime.tar.xz"
+        const val ASSET_ZIP = "node-runtime.zip"
     }
 }

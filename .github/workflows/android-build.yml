@@ -82,12 +82,12 @@ jobs:
         id: node_runtime
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.bundle_node }}
         continue-on-error: true
-        run: python3 scripts/fetch-node-runtime.py --out runtime-bundle/assets/node-runtime.zip
+        run: python3 scripts/fetch-node-runtime.py --out runtime-bundle/assets/node-runtime.tar.xz
 
       - name: Runtime Node.js gagal -> lanjut tanpa runtime
         if: ${{ steps.node_runtime.outcome == 'failure' }}
         run: |
-          rm -f runtime-bundle/assets/node-runtime.zip runtime-bundle/assets/node-runtime.zip.tmp
+          rm -f runtime-bundle/assets/node-runtime.zip runtime-bundle/assets/node-runtime.tar.xz.tmp runtime-bundle/assets/node-runtime.tar.xz runtime-bundle/assets/node-runtime.tar.xz.tmp
           echo "::warning::Runtime Node.js GAGAL disiapkan (lihat log langkah sebelumnya). APK dibuat tanpa runtime; Static Hosting tetap berfungsi."
 
       - name: Setup Gradle
@@ -105,7 +105,7 @@ jobs:
           test -f "$APK" || { echo "::error::app-debug.apk tidak dibuat"; ls -R app/build/outputs || true; exit 1; }
           ls -lh "$APK"
           unzip -tq "$APK"
-          if unzip -l "$APK" | grep -q "assets/node-runtime.zip"; then
+          if unzip -l "$APK" | grep -Eq "assets/node-runtime\.(tar\.xz|zip)"; then
             echo "Runtime Node.js: TERSERTAKAN di APK"
           else
             echo "::warning::Runtime Node.js tidak tersertakan di APK (hanya Static Hosting sampai runtime diimpor)"

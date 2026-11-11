@@ -98,6 +98,7 @@ import id.webdev.studio.developer.DevToolsBus
 import id.webdev.studio.developer.InjectedScripts
 import id.webdev.studio.developer.ProjectLogs
 import id.webdev.studio.ui.AppViewModel
+import id.webdev.studio.ui.AppIcons
 import id.webdev.studio.ui.Dev
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -231,7 +232,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
         if (!fullscreen) {
             // ---- Toolbar ringkas: ✕  [alamat]  ⟳  ⋮ ----
             Row(Modifier.fillMaxWidth().height(44.dp).background(Dev.Surface).padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("✕", color = Dev.Text, fontSize = 16.sp) }
+                TextButton(onClick = onBack, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Close, "Tutup", tint = Dev.Text) }
                 BasicTextField(
                     value = address, onValueChange = { address = it }, singleLine = true,
                     modifier = Modifier.weight(1f).height(34.dp).clip(RoundedCornerShape(17.dp)).background(Dev.Surface2),
@@ -241,21 +242,23 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                     keyboardActions = KeyboardActions(onGo = { navigate(address) }),
                     decorationBox = { inner -> Box(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) { inner() } }
                 )
-                TextButton(onClick = { wv?.reload() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("⟳", color = Dev.Text, fontSize = 18.sp) }
+                TextButton(onClick = { wv?.reload() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Refresh, "Muat ulang", tint = Dev.Text) }
+                TextButton(onClick = { sizeDialog = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) { androidx.compose.material3.Icon(AppIcons.Devices, "Ukuran layar", tint = if (device != null) Dev.Blue else Dev.Text) }
+                TextButton(onClick = { tab = if (tab == Tab3.PREVIEW) Tab3.CONSOLE else Tab3.PREVIEW }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) { androidx.compose.material3.Icon(AppIcons.Terminal, "DevTools", tint = if (tab != Tab3.PREVIEW) Dev.Blue else Dev.Text) }
                 Box {
-                    TextButton(onClick = { menuOpen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { Text("⋮", color = Dev.Text, fontSize = 18.sp) }
+                    TextButton(onClick = { menuOpen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.MoreVert, "Menu", tint = Dev.Text) }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text("Kembali") }, enabled = canBack, onClick = { menuOpen = false; wv?.goBack() })
                         DropdownMenuItem(text = { Text("Maju") }, enabled = canForward, onClick = { menuOpen = false; wv?.goForward() })
                         DropdownMenuItem(text = { Text("Ukuran layar…" + (device?.let { "  (${it.w}×${it.h})" } ?: "")) }, onClick = { menuOpen = false; sizeDialog = true })
                         DropdownMenuItem(text = { Text(if (tab == Tab3.PREVIEW) "Buka DevTools" else "Tutup DevTools") },
                             onClick = { menuOpen = false; tab = if (tab == Tab3.PREVIEW) Tab3.CONSOLE else Tab3.PREVIEW })
-                        DropdownMenuItem(text = { Text("Layar penuh") }, onClick = { menuOpen = false; fullscreen = true })
+                        DropdownMenuItem(text = { Text("Layar penuh") }, leadingIcon = { androidx.compose.material3.Icon(AppIcons.Fullscreen, null) }, onClick = { menuOpen = false; fullscreen = true })
                         DropdownMenuItem(text = { Text((if (desktopMode) "✓ " else "") + "Mode desktop") },
                             onClick = { menuOpen = false; desktopMode = !desktopMode; wv?.settings?.let { st -> applyUa(st, desktopMode || ((device?.w ?: 0) >= 900)) }; wv?.reload() })
                         DropdownMenuItem(text = { Text((if (jsEnabled) "✓ " else "") + "JavaScript") },
                             onClick = { menuOpen = false; jsEnabled = !jsEnabled; wv?.settings?.javaScriptEnabled = jsEnabled; wv?.reload() })
-                        DropdownMenuItem(text = { Text("Hapus cache") }, onClick = { menuOpen = false; wv?.clearCache(true); main.post { logs.addServer(LogLevel.INFO, "Cache WebView dibersihkan") } })
+                        DropdownMenuItem(text = { Text("Hapus cache") }, leadingIcon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Delete, null) }, onClick = { menuOpen = false; wv?.clearCache(true); main.post { logs.addServer(LogLevel.INFO, "Cache WebView dibersihkan") } })
                         DropdownMenuItem(text = { Text("Buka di browser eksternal") }, enabled = baseUrl != null,
                             onClick = { menuOpen = false; baseUrl?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
                     }
@@ -385,7 +388,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
 
             if (fullscreen && customView == null) {
                 TextButton(onClick = { fullscreen = false }, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                    Text("⤢ keluar", color = Dev.Text, modifier = Modifier.background(Dev.Surface.copy(alpha = 0.7f), RoundedCornerShape(6.dp)).padding(6.dp))
+                    androidx.compose.material3.Icon(AppIcons.Fullscreen, "Keluar layar penuh", tint = Dev.Text, modifier = Modifier.background(Dev.Surface.copy(alpha = 0.7f), RoundedCornerShape(6.dp)).padding(6.dp))
                 }
             }
             customView?.let { v ->
@@ -407,7 +410,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                             color = if (tab == t) Dev.Blue else Dev.Muted,
                             modifier = Modifier.weight(1f).clickable { tab = t }.padding(vertical = 11.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
-                    TextButton(onClick = { tab = Tab3.PREVIEW }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { Text("✕", color = Dev.Text) }
+                    TextButton(onClick = { tab = Tab3.PREVIEW }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Close, "Tutup DevTools", tint = Dev.Text) }
                 }
                 when (tab) {
                     Tab3.CONSOLE -> LogPanel { JsConsole(logs, onClear = { logs.js.clear() }) }
@@ -449,15 +452,15 @@ private fun DeviceSizeDialog(current: DeviceSize?, onDismiss: () -> Unit, onPick
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
                 }
                 Row {
-                    TextButton(onClick = { val t = cw; cw = ch; ch = t }) { Text("⟲ Putar (tukar)") }
+                    TextButton(onClick = { val t = cw; cw = ch; ch = t }) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Refresh, "Putar / tukar lebar-tinggi") }
                     TextButton(onClick = {
                         val w = cw.toIntOrNull()?.coerceIn(200, 4000); val h = ch.toIntOrNull()?.coerceIn(200, 4000)
                         if (w != null && h != null) onPick(DeviceSize("Kustom", w, h))
-                    }) { Text("Terapkan") }
+                    }) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Check, "Terapkan") }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Tutup") } }
+        confirmButton = { TextButton(onClick = onDismiss) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Close, "Tutup") } }
     )
 }
 
