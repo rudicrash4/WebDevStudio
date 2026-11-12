@@ -1,5 +1,9 @@
 package id.webdev.studio.browser
 
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Check
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
