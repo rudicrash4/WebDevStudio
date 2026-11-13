@@ -23,6 +23,8 @@ atau browser eksternal. Tanpa Termux, tanpa upload ke internet.
 | Node.js runtime | Binary `node` + `npm` Android arm64 sungguhan (lihat bawah), `npm install`, `npm run <script>`, Vite, Express, stdout/stderr langsung ke Server Console |
 | Browser internal | Toolbar ringkas satu baris (✕, alamat, ⟳, ⋮) yang menghormati status bar/navigation bar; menu ⋮: back/forward, ukuran layar, DevTools, layar penuh, mode desktop, JS on/off, hapus cache, buka eksternal; DevTools sebagai **panel bawah** (CONSOLE · NETWORK · SERVER · ERRORS); file picker, video fullscreen |
 | Ukuran layar | Preset ponsel/tablet/laptop/desktop + ukuran kustom (px CSS), putar, skala otomatis agar muat; UA desktop otomatis untuk lebar ≥ 900 |
+| Editor kode | Ketuk file di Explorer untuk mengedit (pewarnaan sintaks JS/TS/JSON/HTML/CSS, nomor baris, undo/redo, baris tombol karakter cepat); buat file/folder, ganti nama, hapus lewat menu ⋮; perubahan SAF ditulis ke folder asli (butuh izin tulis — impor ulang folder lama sekali) dan disalin ke workspace Node agar HMR melihatnya |
+| Data web | Menu browser: **Hapus data web** (cache, service worker, Cache API, localStorage, IndexedDB, cookie). Setelah file diubah di editor, halaman Static dimuat ulang otomatis tanpa cache/service worker lama (opsi: hapus semua data) |
 | GitHub | Hubungkan dengan Personal Access Token (disimpan terenkripsi Android Keystore); unggah proyek sebagai satu commit lewat Git Data API ke repo yang ada/baru; melewati file yang tidak berubah; mengecualikan `node_modules`, `.git`, `.env*`, `*.pem`, `*.key`; tidak menghapus file di repo |
 | Developer tools | Console (console.*, exception, resource error), Network Monitor (server + fetch/XHR), Error Viewer (tipe, pesan, file, baris, stack) |
 | Server Manager | START / STOP / RESTART / PREVIEW, status **RUNNING hanya setelah port benar-benar menerima koneksi TCP** |
@@ -134,9 +136,8 @@ Aplikasi mengarahkan `OPENSSL_CONF` ke berkas kosong miliknya sendiri, serta `OP
 
 ## GitHub
 
-Settings → GitHub → tempel token (klasik: scope `repo`; fine-grained: Contents Read/Write, plus Administration bila ingin membuat repo baru).
-Di kartu proyek ketuk **GitHub** → pilih repo / buat baru → branch → pesan commit → **Unggah**. OAuth device-flow tidak dipakai
-karena membutuhkan OAuth App terdaftar milik pengembang aplikasi. Batas: 3000 file per unggahan, 25 MB per file.
+Di kartu proyek ketuk ikon unggah → isi **link repo (.git)**, **username**, dan **token** (klasik: scope `repo`; fine-grained: Contents Read/Write) → ikon Ekspor.
+Token disimpan terenkripsi; kolom token boleh kosong untuk pemakaian berikutnya. Repo yang belum ada dibuat otomatis (privat) bila username sama dengan pemilik link. Batas: 3000 file per unggahan, 25 MB per file.
 
 ## Proyek uji yang dituju
 

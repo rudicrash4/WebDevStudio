@@ -56,5 +56,8 @@ class TokenVault(ctx: Context) {
         get() = sp.getString("login", null)
         set(v) { sp.edit().putString("login", v).apply() }
 
+    fun repoUrl(projectId: String): String? = sp.getString("repo_$projectId", null)
+    fun setRepoUrl(projectId: String, url: String) { sp.edit().putString("repo_$projectId", url).apply() }
+
     private companion object { const val ALIAS = "webdev_github_token" }
 }

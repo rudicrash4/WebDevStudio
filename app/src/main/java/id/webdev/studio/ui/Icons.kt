@@ -71,4 +71,27 @@ object AppIcons {
             rect(14f, 17f, 21f, 19.5f)
         }
     }
+
+    val Save: ImageVector by lazy {
+        build("Save") { rect(4f, 4f, 20f, 8f); rect(4f, 8f, 7f, 20f); rect(17f, 8f, 20f, 20f); rect(7f, 17f, 17f, 20f); rect(9f, 10f, 15f, 14f) }
+    }
+
+    val Undo: ImageVector by lazy {
+        build("Undo") {
+            moveTo(3f, 10f); lineTo(9f, 4f); lineTo(9f, 16f); close()
+            rect(9f, 8f, 17f, 12f); rect(15f, 8f, 19f, 18f); rect(9f, 16f, 19f, 18f)
+        }
+    }
+
+    val Redo: ImageVector by lazy {
+        build("Redo") {
+            moveTo(21f, 10f); lineTo(15f, 4f); lineTo(15f, 16f); close()
+            rect(7f, 8f, 15f, 12f); rect(5f, 8f, 9f, 18f); rect(5f, 16f, 15f, 18f)
+        }
+    }
+
+    /** Berkas teks / "file baru". */
+    val File: ImageVector by lazy {
+        build("File") { moveTo(6f, 3f); lineTo(14f, 3f); lineTo(19f, 8f); lineTo(19f, 21f); lineTo(6f, 21f); close() }
+    }
 }

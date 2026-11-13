@@ -22,6 +22,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebStorage
+import android.webkit.CookieManager
+import id.webdev.studio.data.HostingMode
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -128,6 +131,17 @@ class DevBridge(private val logs: ProjectLogs) {
     }
 }
 
+/** JS yang dijalankan di halaman: hapus Service Worker + Cache API (+ storage bila [storage]) lalu muat ulang. */
+private fun webResetJs(storage: Boolean): String {
+    val pre = if (storage)
+        "var P=[];try{localStorage.clear();sessionStorage.clear()}catch(e){};try{if(indexedDB.databases)P.push(indexedDB.databases().then(function(ds){ds.forEach(function(d){indexedDB.deleteDatabase(d.name)})}))}catch(e){};"
+    else "var P=[];"
+    return "(function(){" + pre + "var done=function(){location.reload()};try{" +
+        "if(navigator.serviceWorker)P.push(navigator.serviceWorker.getRegistrations().then(function(rs){return Promise.all(rs.map(function(r){return r.unregister()}))}));" +
+        "if(window.caches)P.push(caches.keys().then(function(ks){return Promise.all(ks.map(function(k){return caches.delete(k)}))}));" +
+        "Promise.all(P).then(done,done)}catch(e){done()}})()"
+}
+
 /** Ukuran viewport (px CSS = dp) untuk menguji halaman seperti di perangkat lain. */
 data class DeviceSize(val name: String, val w: Int, val h: Int)
 
@@ -168,6 +182,8 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
     var menuOpen by remember { mutableStateOf(false) }
     var sizeDialog by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf<DeviceSize?>(null) }
+    var autoFull by remember { mutableStateOf(false) }
+    val resetOnLoad = remember(project.id) { booleanArrayOf(false) }
 
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         val cb = fileCb; fileCb = null
@@ -180,6 +196,30 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
     // Muat ketika server siap (atau port berubah).
     LaunchedEffect(baseUrl, running) {
         if (running && baseUrl != null && wv != null && (wv?.url.isNullOrEmpty() || wv?.url == "about:blank")) wv?.loadUrl(baseUrl)
+    }
+
+    fun resetWeb(storage: Boolean) {
+        val w = wv ?: return
+        w.clearCache(true); w.clearFormData()
+        if (storage) {
+            WebStorage.getInstance().deleteAllData()
+            CookieManager.getInstance().removeAllCookies(null); CookieManager.getInstance().flush()
+        }
+        w.evaluateJavascript(webResetJs(storage), null) // halaman memuat ulang sendiri setelah selesai
+        main.post { logs.addServer(LogLevel.INFO, if (storage) "Data web dihapus (cache, service worker, storage, cookie)" else "Cache web & service worker dihapus") }
+    }
+
+    // File proyek diubah lewat editor -> halaman statis dimuat ulang tanpa cache lama (dev server memakai HMR).
+    val rev = vm.fileRev[project.id] ?: 0
+    LaunchedEffect(rev, wv) {
+        val w = wv ?: return@LaunchedEffect
+        if (rev != (vm.webRevSeen[project.id] ?: 0)) {
+            vm.webRevSeen[project.id] = rev
+            if (project.hostingMode == HostingMode.STATIC) {
+                w.clearCache(true)
+                if (running && !w.url.isNullOrEmpty() && w.url != "about:blank") resetWeb(autoFull) else resetOnLoad[0] = true
+            }
+        }
     }
 
     fun isLocal(u: Uri) = u.host == "127.0.0.1" || u.host == "localhost"
@@ -262,6 +302,9 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                             onClick = { menuOpen = false; desktopMode = !desktopMode; wv?.settings?.let { st -> applyUa(st, desktopMode || ((device?.w ?: 0) >= 900)) }; wv?.reload() })
                         DropdownMenuItem(text = { Text((if (jsEnabled) "✓ " else "") + "JavaScript") },
                             onClick = { menuOpen = false; jsEnabled = !jsEnabled; wv?.settings?.javaScriptEnabled = jsEnabled; wv?.reload() })
+                        DropdownMenuItem(text = { Text("Hapus data web") }, leadingIcon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Delete, null) },
+                            onClick = { menuOpen = false; resetWeb(true) })
+                        DropdownMenuItem(text = { Text((if (autoFull) "✓ " else "") + "Hapus semua data saat file berubah") }, onClick = { autoFull = !autoFull })
                         DropdownMenuItem(text = { Text("Hapus cache") }, leadingIcon = { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Delete, null) }, onClick = { menuOpen = false; wv?.clearCache(true); main.post { logs.addServer(LogLevel.INFO, "Cache WebView dibersihkan") } })
                         DropdownMenuItem(text = { Text("Buka di browser eksternal") }, enabled = baseUrl != null,
                             onClick = { menuOpen = false; baseUrl?.let { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } })
@@ -321,6 +364,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                             }
                             override fun onPageFinished(v: WebView, url: String?) {
                                 canBack = v.canGoBack(); canForward = v.canGoForward()
+                                if (resetOnLoad[0] && url != null && url != "about:blank") { resetOnLoad[0] = false; v.evaluateJavascript(webResetJs(autoFull), null) }
                                 if (url != null) address = url
                             }
                             override fun doUpdateVisitedHistory(v: WebView, url: String?, isReload: Boolean) {

@@ -78,6 +78,16 @@ class GitHubClient(private val token: String) {
         return out
     }
 
+    /** Mengembalikan null bila repo tidak ada (404). */
+    fun getRepo(owner: String, name: String): GhRepo? {
+        val r = call("GET", "/repos/$owner/$name")
+        if (r.first == 404) return null
+        val o = ok(r, "Baca repo")
+        val perms = o.optJSONObject("permissions")
+        if (perms != null && !perms.optBoolean("push", false)) throw GitHubException("Token/akun tidak punya izin menulis ke $owner/$name")
+        return GhRepo(o.getString("full_name"), o.optString("default_branch", "main"), o.optBoolean("private"), o.optInt("size", 0) == 0)
+    }
+
     fun createRepo(name: String, private: Boolean): GhRepo {
         val o = ok(call("POST", "/user/repos", JSONObject().put("name", name).put("private", private)
             .put("auto_init", true).put("description", "Dibuat dari WebDev Studio")), "Buat repo")
@@ -192,7 +202,19 @@ class GitHubClient(private val token: String) {
             "Berhasil: $uploaded file diunggah, $unchanged tidak berubah.")
     }
 
-    private companion object {
+    companion object {
+        /** Terima: https://github.com/u/r(.git), https://user:token@github.com/u/r.git, git@github.com:u/r.git, u/r. */
+        fun parseRepoUrl(input: String): Pair<String, String>? {
+            var t = input.trim().removeSuffix("/").removeSuffix(".git")
+            if (t.isEmpty()) return null
+            t = t.substringAfter("github.com:", t).substringAfter("github.com/", t)
+            t = t.substringAfterLast('@', t).removePrefix("https://").removePrefix("http://")
+            val parts = t.split('/').filter { it.isNotEmpty() }
+            if (parts.size != 2) return null
+            val ok = Regex("[A-Za-z0-9._-]+")
+            return if (ok.matches(parts[0]) && ok.matches(parts[1])) parts[0] to parts[1] else null
+        }
+
         const val MAX_FILES = 3000
         const val MAX_FILE_BYTES = 25_000_000L
     }

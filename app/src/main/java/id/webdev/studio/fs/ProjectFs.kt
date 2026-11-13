@@ -29,7 +29,17 @@ interface ProjectFs {
     fun stat(path: String): FsEntry?
     fun open(path: String, offset: Long = 0): InputStream?
     fun refresh() {}
+
+    // ---- penulisan (editor kode). Mengembalikan null bila sukses, atau pesan galat. ----
+    val canWrite: Boolean get() = false
+    fun writeFile(path: String, data: ByteArray): String? = "Proyek ini read-only"
+    fun makeDir(path: String): String? = "Proyek ini read-only"
+    fun remove(path: String): String? = "Proyek ini read-only"
+    fun rename(path: String, newName: String): String? = "Proyek ini read-only"
 }
+
+fun validName(n: String) = n.isNotBlank() && n != "." && n != ".." && n.length <= 200 &&
+    n.none { it == '/' || it == '\\' || it == '\u0000' }
 
 /** Normalisasi path; null bila mengandung ".." / backslash / NUL (cegah directory traversal). */
 fun safePath(raw: String): String? {
@@ -98,6 +108,32 @@ class FileFs(root: File) : ProjectFs {
         return try {
             FileInputStream(f).also { if (offset > 0) it.channel.position(offset) }
         } catch (e: Exception) { null }
+    }
+
+    override val canWrite: Boolean get() = true
+    private fun child(path: String): File? {
+        val safe = safePath(path) ?: return null
+        return if (safe.isEmpty()) null else resolve(safe)
+    }
+    override fun writeFile(path: String, data: ByteArray): String? {
+        val f = child(path) ?: return "Path tidak valid"
+        if (f.isDirectory) return "Itu folder, bukan file"
+        return try { f.parentFile?.mkdirs(); f.writeBytes(data); null } catch (e: Exception) { "Gagal menulis: ${e.message}" }
+    }
+    override fun makeDir(path: String): String? {
+        val f = child(path) ?: return "Path tidak valid"
+        return if (f.isDirectory || f.mkdirs()) null else "Gagal membuat folder"
+    }
+    override fun remove(path: String): String? {
+        val f = child(path) ?: return "Path tidak valid"
+        return if (f.deleteRecursively()) null else "Gagal menghapus"
+    }
+    override fun rename(path: String, newName: String): String? {
+        val f = child(path) ?: return "Path tidak valid"
+        if (!validName(newName)) return "Nama tidak valid"
+        val t = File(f.parentFile, newName)
+        if (t.exists()) return "Nama sudah dipakai"
+        return if (f.renameTo(t)) null else "Gagal mengganti nama"
     }
 }
 
@@ -207,6 +243,74 @@ class SafFs(private val ctx: Context, private val treeUri: Uri) : ProjectFs {
                 resolver.openInputStream(uri)?.also { if (offset > 0) skipFully(it, offset) }
             }
         } catch (e: Exception) { null }
+    }
+
+    // ---------------- penulisan lewat DocumentsContract (butuh izin tulis pada pohon SAF) ----------------
+    override val canWrite: Boolean get() = true
+
+    private fun denied(e: Exception) =
+        if (e is SecurityException) "Tidak ada izin tulis ke folder ini. Impor ulang folder yang sama (Home → Import) dan izinkan akses."
+        else "Gagal: ${e.message ?: e.javaClass.simpleName}"
+
+    private fun uriOf(n: Node) = DocumentsContract.buildDocumentUriUsingTree(treeUri, n.docId)
+
+    override fun writeFile(path: String, data: ByteArray): String? {
+        val safe = safePath(path)?.takeIf { it.isNotEmpty() } ?: return "Path tidak valid"
+        return try {
+            val existing = cache[safe] ?: nodeFor(safe)
+            val uri: Uri
+            if (existing == null) {
+                val name = safe.substringAfterLast('/')
+                if (!validName(name)) return "Nama tidak valid"
+                val parent = nodeFor(safe.substringBeforeLast('/', "")) ?: return "Folder induk tidak ditemukan"
+                val created = DocumentsContract.createDocument(resolver, uriOf(parent), "application/octet-stream", name)
+                    ?: return "Penyedia penyimpanan menolak membuat file"
+                uri = created
+            } else {
+                if (existing.isDir) return "Itu folder, bukan file"
+                uri = uriOf(existing)
+            }
+            val out0 = try { resolver.openOutputStream(uri, "wt") } catch (e: Exception) { resolver.openOutputStream(uri, "w") }
+            val out = out0 ?: return "Tidak dapat membuka file untuk ditulis"
+            out.use { it.write(data) }
+            cache.remove(safe)
+            null
+        } catch (e: Exception) { denied(e) }
+    }
+
+    override fun makeDir(path: String): String? {
+        val safe = safePath(path)?.takeIf { it.isNotEmpty() } ?: return "Path tidak valid"
+        return try {
+            if (nodeFor(safe) != null) return null
+            val name = safe.substringAfterLast('/')
+            if (!validName(name)) return "Nama tidak valid"
+            val parent = nodeFor(safe.substringBeforeLast('/', "")) ?: return "Folder induk tidak ditemukan"
+            DocumentsContract.createDocument(resolver, uriOf(parent), DocumentsContract.Document.MIME_TYPE_DIR, name)
+                ?: return "Penyedia penyimpanan menolak membuat folder"
+            cache.remove(safe)
+            null
+        } catch (e: Exception) { denied(e) }
+    }
+
+    override fun remove(path: String): String? {
+        val safe = safePath(path)?.takeIf { it.isNotEmpty() } ?: return "Path tidak valid"
+        return try {
+            val n = nodeFor(safe) ?: return "Tidak ditemukan"
+            if (!DocumentsContract.deleteDocument(resolver, uriOf(n))) return "Gagal menghapus"
+            cache.keys.removeAll { it == safe || it.startsWith("$safe/") }
+            null
+        } catch (e: Exception) { denied(e) }
+    }
+
+    override fun rename(path: String, newName: String): String? {
+        val safe = safePath(path)?.takeIf { it.isNotEmpty() } ?: return "Path tidak valid"
+        if (!validName(newName)) return "Nama tidak valid"
+        return try {
+            val n = nodeFor(safe) ?: return "Tidak ditemukan"
+            DocumentsContract.renameDocument(resolver, uriOf(n), newName) ?: return "Penyedia penyimpanan menolak ganti nama"
+            cache.clear()
+            null
+        } catch (e: Exception) { denied(e) }
     }
 
     private fun skipFully(s: InputStream, n: Long) {

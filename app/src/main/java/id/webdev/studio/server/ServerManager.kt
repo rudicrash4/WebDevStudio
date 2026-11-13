@@ -85,6 +85,45 @@ class ServerManager(
         SourceType.ASSET -> File(app.filesDir, "workspaces/${p.id}")
     }
 
+    // ---------- edit file (editor kode) ----------
+    // Untuk proyek SAF, Node memakai salinan di workspaces/<id>; perubahan juga ditulis ke salinan itu
+    // supaya dev server (HMR) langsung melihatnya tanpa menunggu sinkron berikutnya.
+
+    private fun mirrorTarget(p: Project, path: String): File? {
+        if (p.sourceType != SourceType.SAF) return null
+        val ws = workspaceDir(p)
+        if (!ws.isDirectory) return null
+        val safe = id.webdev.studio.fs.safePath(path)?.takeIf { it.isNotEmpty() } ?: return null
+        if (safe.split('/').any { it == "node_modules" || it == ".git" }) return null
+        return File(ws, safe)
+    }
+
+    fun writeFile(p: Project, path: String, data: ByteArray): String? {
+        val err = fsFor(p).writeFile(path, data)
+        if (err == null) mirrorTarget(p, path)?.let { t -> runCatching { t.parentFile?.mkdirs(); t.writeBytes(data) } }
+        return err
+    }
+
+    fun makeDir(p: Project, path: String): String? {
+        val err = fsFor(p).makeDir(path)
+        if (err == null) mirrorTarget(p, path)?.let { t -> runCatching { t.mkdirs() } }
+        return err
+    }
+
+    fun removePath(p: Project, path: String): String? {
+        val err = fsFor(p).remove(path)
+        if (err == null) mirrorTarget(p, path)?.let { t -> runCatching { t.deleteRecursively() } }
+        return err
+    }
+
+    fun renamePath(p: Project, path: String, newName: String): String? {
+        val err = fsFor(p).rename(path, newName)
+        if (err == null) mirrorTarget(p, path)?.let { t -> runCatching { if (validNameLocal(newName)) t.renameTo(File(t.parentFile, newName)) } }
+        return err
+    }
+
+    private fun validNameLocal(n: String) = id.webdev.studio.fs.validName(n)
+
     fun depsInstalled(p: Project): Boolean {
         val nm = File(workspaceDir(p), "node_modules")
         return nm.isDirectory && (nm.list()?.isNotEmpty() == true)

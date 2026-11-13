@@ -16,7 +16,6 @@ import id.webdev.studio.data.Project
 import id.webdev.studio.data.SourceType
 import id.webdev.studio.fs.FileFs
 import id.webdev.studio.fs.ProjectFs
-import id.webdev.studio.github.GhRepo
 import id.webdev.studio.github.GitHubClient
 import id.webdev.studio.github.GitHubException
 import id.webdev.studio.github.UploadResult
@@ -102,8 +101,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             importState = ImportState.Busy("Mengambil izin akses folder…")
             try {
                 try {
-                    ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                } catch (_: Exception) { /* provider tidak mendukung izin persisten */ }
+                    // baca + tulis agar editor kode dapat menyimpan perubahan; bila ditolak, minta baca saja
+                    ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                } catch (_: Exception) {
+                    try { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+                }
                 val p = withContext(Dispatchers.IO) {
                     val name = DocumentFile.fromTreeUri(ctx, uri)?.name ?: "Project"
                     val fs = SafFs(ctx, uri)
@@ -257,69 +259,59 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return "Cache dibersihkan (${freed / 1024} KB)"
     }
 
+    // ---------- perubahan file -> browser menyegarkan halaman ----------
+    /** Naik setiap kali file proyek diubah lewat editor; BrowserScreen mengamati nilainya. */
+    val fileRev = androidx.compose.runtime.mutableStateMapOf<String, Int>()
+    /** Revisi file terakhir yang sudah diterapkan ke WebView per proyek. */
+    val webRevSeen = HashMap<String, Int>()
+    fun bumpFileRev(projectId: String) { fileRev[projectId] = (fileRev[projectId] ?: 0) + 1 }
+
     // ---------- GitHub ----------
 
-    var ghLogin by mutableStateOf<String?>(null)
-        private set
     var ghBusy by mutableStateOf<String?>(null)
-        private set
-    var ghRepos by mutableStateOf<List<GhRepo>>(emptyList())
         private set
     var ghResult by mutableStateOf<Result<UploadResult>?>(null)
         private set
-    var ghError by mutableStateOf<String?>(null)
-        private set
     @Volatile private var ghCancel = false
 
-    fun ghInit() { if (ghLogin == null && app.vault.load() != null) ghLogin = app.vault.login }
+    fun ghSavedUser(): String = app.vault.login ?: ""
+    fun ghSavedRepo(p: Project): String = app.vault.repoUrl(p.id) ?: ""
+    fun ghHasToken(): Boolean = app.vault.load() != null
+    fun ghForget() { app.vault.clear(); toast = "Token GitHub dihapus dari perangkat" }
     fun ghClearResult() { ghResult = null }
     fun ghCancelUpload() { ghCancel = true }
 
-    fun ghConnect(token: String) {
-        val t = token.trim()
-        if (t.isEmpty()) { toast = "Token kosong"; return }
-        viewModelScope.launch {
-            ghBusy = "Memverifikasi token…"; ghError = null
-            try {
-                val login = withContext(Dispatchers.IO) { GitHubClient(t).login() }
-                app.vault.save(t); app.vault.login = login; ghLogin = login
-                toast = "Terhubung sebagai $login"
-                ghLoadRepos()
-            } catch (e: Throwable) { ghError = "${e.javaClass.simpleName}: ${e.message}"; toast = "Gagal menghubungkan GitHub" }
-            ghBusy = null
-        }
-    }
-
-    fun ghDisconnect() { app.vault.clear(); ghLogin = null; ghRepos = emptyList(); toast = "GitHub diputus (token dihapus dari perangkat)" }
-
-    fun ghLoadRepos() {
-        val t = app.vault.load() ?: return
-        viewModelScope.launch {
-            ghBusy = "Memuat daftar repo…"
-            try { ghRepos = withContext(Dispatchers.IO) { GitHubClient(t).listRepos() } }
-            catch (e: Throwable) { toast = e.message ?: "Gagal memuat repo" }
-            ghBusy = null
-        }
-    }
-
-    /** Unggah proyek ke [repo] (atau buat repo baru bila [newRepoName] terisi). */
-    fun ghUpload(p: Project, repo: GhRepo?, newRepoName: String?, newPrivate: Boolean, branch: String, message: String, subdir: String) {
-        val t = app.vault.load() ?: run { toast = "Belum terhubung ke GitHub"; return }
+    /** Ekspor proyek ke repo GitHub: cukup link repo, username, dan token (token kosong = pakai yang tersimpan). */
+    fun ghPush(p: Project, repoUrl: String, user: String, tokenInput: String, branch: String, message: String, subdir: String) {
+        val parsed = GitHubClient.parseRepoUrl(repoUrl)
+        val token = tokenInput.trim().ifEmpty { app.vault.load() ?: "" }
+        if (parsed == null) { ghResult = Result.failure(GitHubException("Link repo tidak valid. Contoh: https://github.com/username/repo.git")); return }
+        if (token.isEmpty()) { ghResult = Result.failure(GitHubException("Token belum diisi")); return }
         ghCancel = false; ghResult = null
         viewModelScope.launch {
-            ghBusy = "Menyiapkan…"
+            ghBusy = "Memverifikasi token…"
             val res = withContext(Dispatchers.IO) {
                 runCatching {
-                    val client = GitHubClient(t)
-                    val target = repo ?: client.createRepo(newRepoName!!.trim(), newPrivate)
-                    val br = branch.trim().ifEmpty { target.defaultBranch }
-                    client.upload(servers.fsFor(p), target, br, message.ifBlank { "Update dari WebDev Studio" }, subdir,
+                    val client = GitHubClient(token)
+                    val login = client.login()
+                    val owner = parsed.first
+                    var created = false
+                    val repo = client.getRepo(owner, parsed.second) ?: run {
+                        if (!owner.equals(login, true) && !owner.equals(user.trim(), true))
+                            throw GitHubException("Repo $owner/${parsed.second} tidak ditemukan (atau token tidak punya akses).")
+                        ghBusy = "Repo belum ada, membuat ${parsed.second} (privat)…"
+                        created = true
+                        client.createRepo(parsed.second, true)
+                    }
+                    val br = branch.trim().ifEmpty { repo.defaultBranch }
+                    val r = client.upload(servers.fsFor(p), repo, br, message.ifBlank { "Update dari WebDev Studio" }, subdir,
                         onProgress = { m -> ghBusy = m }, cancelled = { ghCancel })
+                    app.vault.save(token); app.vault.login = user.trim().ifEmpty { login }; app.vault.setRepoUrl(p.id, repoUrl.trim())
+                    if (created) r.copy(message = "Repo baru dibuat (privat). " + r.message) else r
                 }
             }
             ghResult = res
             ghBusy = null
-            if (res.isSuccess) ghLoadRepos()
         }
     }
 
