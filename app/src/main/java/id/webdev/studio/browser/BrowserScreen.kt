@@ -338,18 +338,12 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
             // Landscape tanpa preset pada layar potret: WebView berukuran (tinggi × lebar) lalu diputar 90°.
             val rotatePhys = landscape && d == null && availH > availW
             val sc = if (d == null) 1f else minOf(1f, availW / d.w, availH / d.h)
-            val frame = when {
-                rotatePhys -> Modifier.requiredSize(availH.dp, availW.dp).graphicsLayer { rotationZ = 90f }
-                d == null -> Modifier.fillMaxSize()
-                else -> Modifier.requiredSize(d.w.dp, d.h.dp).graphicsLayer { scaleX = sc; scaleY = sc }.border(BorderStroke(1.dp, Dev.Blue))
-            }
             // WebView selalu hidup (tidak di-recreate saat berpindah tab / ukuran).
             AndroidView(
-                modifier = frame,
+                modifier = Modifier.fillMaxSize(),
                 factory = { c ->
-                    WebView(c).apply {
+                    val web = WebView(c).apply {
                         setBackgroundColor(0xFF0D1117.toInt())
-                        layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                         settings.apply {
                             javaScriptEnabled = true
                             domStorageEnabled = true
@@ -443,8 +437,27 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                         val u = vm.servers.info(project.id)
                         if (u?.status == ServerStatus.RUNNING) loadUrl(u.url)
                     }
+                    // WebView dibungkus FrameLayout native: rotasi/skala dilakukan di View (bukan graphicsLayer Compose)
+                    // sehingga sentuhan dipetakan dengan benar oleh sistem View.
+                    FrameLayout(c).apply {
+                        clipChildren = false
+                        addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT, android.view.Gravity.CENTER))
+                    }
                 },
-                update = { }
+                update = { box ->
+                    val w = box.getChildAt(0) as? WebView
+                    if (w != null) {
+                        val dn = box.resources.displayMetrics.density
+                        val lp = w.layoutParams as FrameLayout.LayoutParams
+                        when {
+                            rotatePhys -> { lp.width = (availH * dn).toInt(); lp.height = (availW * dn).toInt(); w.rotation = 90f; w.scaleX = 1f; w.scaleY = 1f }
+                            d != null -> { lp.width = (d.w * dn).toInt(); lp.height = (d.h * dn).toInt(); w.rotation = 0f; w.scaleX = sc; w.scaleY = sc }
+                            else -> { lp.width = ViewGroup.LayoutParams.MATCH_PARENT; lp.height = ViewGroup.LayoutParams.MATCH_PARENT; w.rotation = 0f; w.scaleX = 1f; w.scaleY = 1f }
+                        }
+                        lp.gravity = android.view.Gravity.CENTER
+                        w.layoutParams = lp
+                    }
+                }
             )
             if (d != null || rotatePhys) Text(if (d != null) "${d.w}×${d.h} · ${(sc * 100).toInt()}%" else "landscape ${availH.toInt()}×${availW.toInt()}", color = Dev.Text, fontSize = 10.sp, fontFamily = Dev.Mono,
                 modifier = Modifier.align(Alignment.BottomCenter).background(Dev.Surface.copy(alpha = 0.8f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp))

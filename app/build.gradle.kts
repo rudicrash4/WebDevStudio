@@ -19,11 +19,26 @@ android {
         // (esbuild, dll.) dari node_modules, sehingga butuh targetSdk 28 (pendekatan yang sama
         // dengan Termux). Konsekuensi: tidak cocok untuk Play Store, tetapi aman untuk sideload APK.
         targetSdk = 28
-        versionCode = 5
-        versionName = "0.4.0"
+        // versionCode naik otomatis di CI (nomor run GitHub Actions) agar setiap APK baru dapat memperbarui yang lama.
+        versionCode = 1000 + (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0)
+        versionName = "0.5.0"
+    }
+
+    // Kunci penandatangan TETAP (app/debug.keystore) untuk semua build. Tanpa ini setiap runner CI
+    // membuat kunci debug acak → Android menolak pembaruan ("bentrok dengan paket yang sudah ada").
+    signingConfigs {
+        create("shared") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = false
         }

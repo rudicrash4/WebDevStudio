@@ -69,8 +69,25 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
+            androidx.compose.runtime.LaunchedEffect(vm.settings.hideNav) { applySystemBars() }
             WebDevTheme(vm.settings.themeMode) { Root(vm) }
         }
+    }
+
+    /** Tombol navigasi disembunyikan (immersive): tidak sengaja tertekan; geser dari tepi untuk memunculkan sementara. */
+    fun applySystemBars() {
+        val c = androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
+        if (vm.settings.hideNav) {
+            c.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            c.hide(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+        } else {
+            c.show(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applySystemBars()
     }
 }
 

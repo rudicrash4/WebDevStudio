@@ -400,6 +400,9 @@ fun SettingsScreen(
         )
         SwitchRow("SPA fallback (Static)", "Rute tak dikenal dialihkan ke index.html", s.spaFallback, s::updateSpaFallback)
 
+        SectionTitle("Layar")
+        SwitchRow("Sembunyikan tombol navigasi", "Mencegah salah tekan. Geser dari tepi bawah untuk memunculkannya sementara.", vm.settings.hideNav) { vm.settings.updateHideNav(it) }
+
         SectionTitle("Runtime Node.js")
         Card(colors = CardDefaults.cardColors(containerColor = Dev.Surface), border = BorderStroke(1.dp, Dev.Border)) {
             Column(Modifier.padding(14.dp)) {

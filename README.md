@@ -114,6 +114,13 @@ menyediakan npm/`child_process`, sehingga tidak bisa menjalankan `npm install` +
 - Ukuran APK bertambah puluhan MB bila runtime Node disertakan.
 - Network Monitor: request ke server Node tidak terlihat sisi-server; yang tampil adalah fetch/XHR dan error dari halaman.
 
+## Pembaruan & penandatanganan
+
+Semua build ditandatangani dengan kunci tetap `app/debug.keystore` dan memakai `applicationId` yang sama (`id.webdev.studio`);
+`versionCode` = 1000 + nomor run GitHub Actions. Jadi APK baru **memperbarui** yang lama tanpa bentrok dan data (proyek, pengaturan) tetap.
+Build lama yang ditandatangani kunci acak CI harus di-uninstall **satu kali**; setelah itu pembaruan berjalan mulus.
+Kunci ini kunci debug yang publik di repo — cukup untuk sideload pribadi, bukan untuk distribusi/Play Store.
+
 ## Build lewat GitHub Actions
 
 1. Push seluruh isi folder ini ke repository GitHub (branch `main`).

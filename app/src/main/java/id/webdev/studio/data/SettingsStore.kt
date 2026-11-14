@@ -27,6 +27,11 @@ class SettingsStore(ctx: Context) {
     var npmIgnoreScripts: Boolean by mutableStateOf(sp.getBoolean("ignore_scripts", true))
         private set
 
+    /** Sembunyikan tombol navigasi sistem (geser dari tepi bawah untuk memunculkan sementara). */
+    var hideNav: Boolean by mutableStateOf(sp.getBoolean("hide_nav", true))
+        private set
+    fun updateHideNav(v: Boolean) { hideNav = v; sp.edit().putBoolean("hide_nav", v).apply() }
+
     fun updateThemeMode(v: String) { themeMode = v; sp.edit().putString("theme", v).apply() }
     fun updateBrowserMode(v: String) { browserMode = v; sp.edit().putString("browser", v).apply() }
     fun updateDefaultPort(v: Int) {

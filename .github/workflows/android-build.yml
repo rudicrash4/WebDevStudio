@@ -105,6 +105,9 @@ jobs:
           test -f "$APK" || { echo "::error::app-debug.apk tidak dibuat"; ls -R app/build/outputs || true; exit 1; }
           ls -lh "$APK"
           unzip -tq "$APK"
+          # Bukti kunci tetap: sidik jari sertifikat harus sama di setiap build agar APK bisa memperbarui versi lama
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" | grep -E "Signer #1 certificate (DN|SHA-256)" || true
+          grep -o 'versionCode[^,]*' app/build.gradle.kts | head -1 || true
           if unzip -l "$APK" | grep -Eq "assets/node-runtime\.(tar\.xz|zip)"; then
             echo "Runtime Node.js: TERSERTAKAN di APK"
           else
