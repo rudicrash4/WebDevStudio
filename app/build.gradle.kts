@@ -19,8 +19,8 @@ android {
         // (esbuild, dll.) dari node_modules, sehingga butuh targetSdk 28 (pendekatan yang sama
         // dengan Termux). Konsekuensi: tidak cocok untuk Play Store, tetapi aman untuk sideload APK.
         targetSdk = 28
-        versionCode = 4
-        versionName = "0.3.0"
+        versionCode = 5
+        versionName = "0.4.0"
     }
 
     buildTypes {

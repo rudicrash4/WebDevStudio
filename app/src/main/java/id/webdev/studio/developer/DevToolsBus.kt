@@ -76,4 +76,20 @@ object InjectedScripts {
   };
 })();
 """.trimIndent()
+
+    /** Saat "Landscape" aktif: halaman melihat perangkat sebagai landscape (screen.orientation, window.orientation, screen.width/height, lock()). */
+    val ORIENT = """
+(function(){
+  if (location.protocol !== 'http:' || !/^(127\.0\.0\.1|localhost)$/.test(location.hostname)) return;
+  var B = window.$BRIDGE; if (!B || !B.landscape || !B.landscape()) return;
+  function def(o,k,v){ try { Object.defineProperty(o,k,{get:function(){return v},configurable:true}); } catch(e){} }
+  def(window,'orientation',90);
+  try {
+    var so = screen.orientation;
+    if (so) { def(so,'type','landscape-primary'); def(so,'angle',90); try { so.lock = function(){ return Promise.resolve(); }; so.unlock = function(){}; } catch(e){} }
+  } catch(e){}
+  var W = screen.width, H = screen.height, big = Math.max(W,H), small = Math.min(W,H);
+  def(screen,'width',big); def(screen,'height',small); def(screen,'availWidth',big); def(screen,'availHeight',small);
+})();
+""".trimIndent()
 }

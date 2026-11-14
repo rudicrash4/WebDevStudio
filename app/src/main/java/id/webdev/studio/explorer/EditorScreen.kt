@@ -44,7 +44,10 @@ import id.webdev.studio.ui.Dev
 @Composable
 fun EditorScreen(
     name: String, path: String, initial: String, editable: Boolean, notice: String?,
-    onSave: (String, (String?) -> Unit) -> Unit, onClose: () -> Unit
+    onSave: (String, (String?) -> Unit) -> Unit, onClose: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxSize().imePadding(),
+    embedded: Boolean = false,
+    onPickFile: (() -> Unit)? = null
 ) {
     var tfv by remember(path) { mutableStateOf(TextFieldValue(initial)) }
     var saved by remember(path) { mutableStateOf(initial) }
@@ -80,11 +83,28 @@ fun EditorScreen(
         onSave(text) { err -> saving = false; if (err == null) saved = text else error = err }
     }
 
-    BackHandler { if (dirty) confirmDiscard = true else onClose() }
+    if (!embedded) BackHandler { if (dirty) confirmDiscard = true else onClose() }
 
-    Column(Modifier.fillMaxSize().background(Dev.Bg).imePadding()) {
+    // Mode live: simpan otomatis 0,7 dtk setelah berhenti mengetik; simpan juga saat berganti file.
+    var auto by remember(path) { mutableStateOf(embedded) }
+    LaunchedEffect(tfv.text, auto) {
+        if (auto && editable && tfv.text != saved && !saving) {
+            kotlinx.coroutines.delay(700)
+            if (tfv.text != saved) doSave()
+        }
+    }
+    val latestText by androidx.compose.runtime.rememberUpdatedState(tfv.text)
+    val latestSaved by androidx.compose.runtime.rememberUpdatedState(saved)
+    androidx.compose.runtime.DisposableEffect(path) {
+        onDispose { if (embedded && editable && latestText != latestSaved) onSave(latestText) { } }
+    }
+
+    Column(modifier.background(Dev.Bg)) {
         Row(Modifier.fillMaxWidth().background(Dev.Surface).padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { if (dirty) confirmDiscard = true else onClose() }) { Icon(Icons.Filled.Close, "Tutup", tint = Dev.Text) }
+            onPickFile?.let { pick -> IconButton(onClick = pick) { Icon(AppIcons.Folder, "Pilih file", tint = Dev.Blue) } }
+            if (embedded && editable) Text("AUTO", color = if (auto) Dev.Green else Dev.Muted, fontSize = 10.sp, fontFamily = Dev.Mono,
+                modifier = Modifier.clickable { auto = !auto }.padding(horizontal = 6.dp, vertical = 8.dp))
             Column(Modifier.weight(1f)) {
                 Text(name + if (dirty) " ●" else "", color = Dev.Text, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, maxLines = 1)
                 Text("/$path", color = Dev.Muted, fontSize = 10.sp, fontFamily = Dev.Mono, maxLines = 1)

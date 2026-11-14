@@ -34,6 +34,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -115,6 +118,8 @@ private val main = Handler(Looper.getMainLooper())
 
 /** Jembatan JS → Kotlin. Hanya menulis log; tidak mengekspos file/aksi sensitif. */
 class DevBridge(private val logs: ProjectLogs) {
+    @Volatile var landscapeFlag = false
+    @JavascriptInterface fun landscape(): Boolean = landscapeFlag
     @JavascriptInterface fun error(type: String?, msg: String?, file: String?, line: Int, stack: String?) {
         val m = JsMessage(System.currentTimeMillis(), LogLevel.ERROR, (msg ?: "").take(2000), (file ?: "").take(500), line,
             (type ?: "Error").take(80), (stack ?: "").take(4000))
@@ -183,6 +188,8 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
     var sizeDialog by remember { mutableStateOf(false) }
     var device by remember { mutableStateOf<DeviceSize?>(null) }
     var autoFull by remember { mutableStateOf(false) }
+    var landscape by remember { mutableStateOf(false) }
+    var liveOpen by remember { mutableStateOf(false) }
     val resetOnLoad = remember(project.id) { booleanArrayOf(false) }
 
     val chooser = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
@@ -287,15 +294,21 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                     decorationBox = { inner -> Box(Modifier.fillMaxSize().padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) { inner() } }
                 )
                 TextButton(onClick = { wv?.reload() }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Refresh, "Muat ulang", tint = Dev.Text) }
-                TextButton(onClick = { sizeDialog = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) { androidx.compose.material3.Icon(AppIcons.Devices, "Ukuran layar", tint = if (device != null) Dev.Blue else Dev.Text) }
-                TextButton(onClick = { tab = if (tab == Tab3.PREVIEW) Tab3.CONSOLE else Tab3.PREVIEW }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) { androidx.compose.material3.Icon(AppIcons.Terminal, "DevTools", tint = if (tab != Tab3.PREVIEW) Dev.Blue else Dev.Text) }
+                TextButton(onClick = { liveOpen = !liveOpen }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Edit, "Editor kode live", tint = if (liveOpen) Dev.Blue else Dev.Text)
+                }
                 Box {
                     TextButton(onClick = { menuOpen = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp)) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.MoreVert, "Menu", tint = Dev.Text) }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(text = { Text("Kembali") }, enabled = canBack, onClick = { menuOpen = false; wv?.goBack() })
                         DropdownMenuItem(text = { Text("Maju") }, enabled = canForward, onClick = { menuOpen = false; wv?.goForward() })
-                        DropdownMenuItem(text = { Text("Ukuran layar…" + (device?.let { "  (${it.w}×${it.h})" } ?: "")) }, onClick = { menuOpen = false; sizeDialog = true })
+                        DropdownMenuItem(text = { Text((if (landscape) "✓ " else "") + "Landscape (rotasi web)") },
+                            leadingIcon = { androidx.compose.material3.Icon(AppIcons.Landscape, null) },
+                            onClick = { menuOpen = false; landscape = !landscape; bridge.landscapeFlag = landscape; wv?.reload() })
+                        DropdownMenuItem(text = { Text("Ukuran layar…" + (device?.let { "  (${it.w}×${it.h})" } ?: "")) },
+                            leadingIcon = { androidx.compose.material3.Icon(AppIcons.Devices, null) }, onClick = { menuOpen = false; sizeDialog = true })
                         DropdownMenuItem(text = { Text(if (tab == Tab3.PREVIEW) "Buka DevTools" else "Tutup DevTools") },
+                            leadingIcon = { androidx.compose.material3.Icon(AppIcons.Terminal, null) },
                             onClick = { menuOpen = false; tab = if (tab == Tab3.PREVIEW) Tab3.CONSOLE else Tab3.PREVIEW })
                         DropdownMenuItem(text = { Text("Layar penuh") }, leadingIcon = { androidx.compose.material3.Icon(AppIcons.Fullscreen, null) }, onClick = { menuOpen = false; fullscreen = true })
                         DropdownMenuItem(text = { Text((if (desktopMode) "✓ " else "") + "Mode desktop") },
@@ -314,12 +327,22 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
             if (loadingPct in 1..99) androidx.compose.material3.LinearProgressIndicator(progress = { loadingPct / 100f }, modifier = Modifier.fillMaxWidth().height(2.dp))
         }
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        val screenLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+        Row(Modifier.weight(1f).fillMaxWidth()) {
+        Box(Modifier.weight(1f).fillMaxHeight()) {
           BoxWithConstraints(Modifier.fillMaxSize().background(if (device != null) androidx.compose.ui.graphics.Color(0xFF05070A) else Dev.Bg), contentAlignment = Alignment.Center) {
-            val d = device
-            val sc = if (d == null) 1f else minOf(1f, maxWidth.value / d.w, maxHeight.value / d.h)
-            val frame = if (d == null) Modifier.fillMaxSize()
-                else Modifier.requiredSize(d.w.dp, d.h.dp).graphicsLayer { scaleX = sc; scaleY = sc }.border(BorderStroke(1.dp, Dev.Blue))
+            val availW = maxWidth.value; val availH = maxHeight.value
+            val d0 = device
+            // Landscape pada preset perangkat: tukar sisi agar lebar > tinggi.
+            val d = if (d0 != null && landscape) DeviceSize(d0.name, maxOf(d0.w, d0.h), minOf(d0.w, d0.h)) else d0
+            // Landscape tanpa preset pada layar potret: WebView berukuran (tinggi × lebar) lalu diputar 90°.
+            val rotatePhys = landscape && d == null && availH > availW
+            val sc = if (d == null) 1f else minOf(1f, availW / d.w, availH / d.h)
+            val frame = when {
+                rotatePhys -> Modifier.requiredSize(availH.dp, availW.dp).graphicsLayer { rotationZ = 90f }
+                d == null -> Modifier.fillMaxSize()
+                else -> Modifier.requiredSize(d.w.dp, d.h.dp).graphicsLayer { scaleX = sc; scaleY = sc }.border(BorderStroke(1.dp, Dev.Blue))
+            }
             // WebView selalu hidup (tidak di-recreate saat berpindah tab / ukuran).
             AndroidView(
                 modifier = frame,
@@ -348,6 +371,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                         if (injection) {
                             try {
                                 WebViewCompat.addDocumentStartJavaScript(this, InjectedScripts.MONITOR, setOf("*"))
+                                WebViewCompat.addDocumentStartJavaScript(this, InjectedScripts.ORIENT, setOf("*"))
                             } catch (_: Exception) {}
                         }
                         webViewClient = object : WebViewClient() {
@@ -422,7 +446,7 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                 },
                 update = { }
             )
-            if (d != null) Text("${d.w}×${d.h} · ${(sc * 100).toInt()}%", color = Dev.Text, fontSize = 10.sp, fontFamily = Dev.Mono,
+            if (d != null || rotatePhys) Text(if (d != null) "${d.w}×${d.h} · ${(sc * 100).toInt()}%" else "landscape ${availH.toInt()}×${availW.toInt()}", color = Dev.Text, fontSize = 10.sp, fontFamily = Dev.Mono,
                 modifier = Modifier.align(Alignment.BottomCenter).background(Dev.Surface.copy(alpha = 0.8f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp))
           }
 
@@ -445,6 +469,12 @@ fun BrowserScreen(vm: AppViewModel, project: Project, initialTab: Int = 0, onBac
                     factory = { c -> FrameLayout(c).apply { (v.parent as? ViewGroup)?.removeView(v); addView(v) } }
                 )
             }
+        }
+        if (liveOpen && screenLandscape && !fullscreen) LiveEditorPanel(vm, project, Modifier.weight(1f).fillMaxHeight(), onClose = { liveOpen = false })
+        }
+        if (liveOpen && !screenLandscape && !fullscreen) {
+            androidx.compose.material3.HorizontalDivider(color = Dev.Muted.copy(alpha = 0.3f))
+            LiveEditorPanel(vm, project, Modifier.weight(1f).fillMaxWidth(), onClose = { liveOpen = false })
         }
 
         // ---- DevTools sebagai panel bawah (tidak menutupi halaman sepenuhnya) ----

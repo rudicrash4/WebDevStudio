@@ -1,6 +1,17 @@
 package id.webdev.studio
 
 import android.content.Intent
+import android.content.res.Configuration
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.sp
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -115,27 +126,15 @@ private fun Root(vm: AppViewModel) {
             }
         }
         else -> {
-            Scaffold(
-                containerColor = Dev.Bg,
-                bottomBar = {
-                    NavigationBar(containerColor = Dev.Surface) {
-                        val items = listOf(
-                            Triple(Tab.HOME, "Home", Icons.Filled.Home),
-                            Triple(Tab.PROJECTS, "Projects", Icons.Filled.List),
-                            Triple(Tab.SERVERS, "Servers", Icons.Filled.PlayArrow),
-                            Triple(Tab.SETTINGS, "Settings", Icons.Filled.Settings)
-                        )
-                        items.forEach { (t, label, icon) ->
-                            NavigationBarItem(
-                                selected = tab == t, onClick = { tab = t },
-                                icon = { Icon(icon, label) }, label = { Text(label) },
-                                colors = NavigationBarItemDefaults.colors(indicatorColor = Dev.Surface2)
-                            )
-                        }
-                    }
-                }
-            ) { pad ->
-                Box(Modifier.padding(pad).statusBarsPadding().fillMaxSize()) {
+            val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+            val items = listOf(
+                Triple(Tab.HOME, "Home", Icons.Filled.Home),
+                Triple(Tab.PROJECTS, "Projects", Icons.Filled.List),
+                Triple(Tab.SERVERS, "Servers", Icons.Filled.PlayArrow),
+                Triple(Tab.SETTINGS, "Settings", Icons.Filled.Settings)
+            )
+            val content: @Composable () -> Unit = {
+                Box(Modifier.fillMaxSize()) {
                     if (tab != Tab.HOME) BackHandler { tab = Tab.HOME }
                     when (tab) {
                         Tab.HOME -> HomeScreen(
@@ -157,6 +156,36 @@ private fun Root(vm: AppViewModel) {
                         })
                     }
                 }
+            }
+            if (landscape) {
+                // Landscape: rail di sisi kiri (tinggi layar terpakai penuh untuk konten), rail bisa digulir.
+                Row(Modifier.fillMaxSize().background(Dev.Bg).systemBarsPadding()) {
+                    NavigationRail(containerColor = Dev.Surface, modifier = Modifier.fillMaxHeight().verticalScroll(rememberScrollState())) {
+                        items.forEach { (t, label, icon) ->
+                            NavigationRailItem(
+                                selected = tab == t, onClick = { tab = t },
+                                icon = { Icon(icon, label) }, label = { Text(label, fontSize = 11.sp) },
+                                colors = NavigationRailItemDefaults.colors(indicatorColor = Dev.Surface2)
+                            )
+                        }
+                    }
+                    Box(Modifier.weight(1f).fillMaxHeight()) { content() }
+                }
+            } else {
+                Scaffold(
+                    containerColor = Dev.Bg,
+                    bottomBar = {
+                        NavigationBar(containerColor = Dev.Surface) {
+                            items.forEach { (t, label, icon) ->
+                                NavigationBarItem(
+                                    selected = tab == t, onClick = { tab = t },
+                                    icon = { Icon(icon, label) }, label = { Text(label) },
+                                    colors = NavigationBarItemDefaults.colors(indicatorColor = Dev.Surface2)
+                                )
+                            }
+                        }
+                    }
+                ) { pad -> Box(Modifier.padding(pad).statusBarsPadding().fillMaxSize()) { content() } }
             }
         }
     }

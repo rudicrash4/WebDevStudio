@@ -94,4 +94,9 @@ object AppIcons {
     val File: ImageVector by lazy {
         build("File") { moveTo(6f, 3f); lineTo(14f, 3f); lineTo(19f, 8f); lineTo(19f, 21f); lineTo(6f, 21f); close() }
     }
+
+    /** Layar landscape (rotasi web). */
+    val Landscape: ImageVector by lazy {
+        build("Landscape") { rect(2f, 6f, 22f, 8f); rect(2f, 8f, 4f, 16f); rect(20f, 8f, 22f, 16f); rect(2f, 16f, 22f, 18f); rect(10f, 11f, 14f, 13f) }
+    }
 }

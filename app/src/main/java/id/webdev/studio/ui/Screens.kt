@@ -466,7 +466,7 @@ fun ImportChooser(onFolder: () -> Unit, onZip: () -> Unit, onClose: () -> Unit) 
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Import Project") },
-        text = { Text("Pilih sumber proyek. Folder dibaca langsung lewat izin akses penyimpanan (read-only); ZIP diekstrak ke penyimpanan aplikasi.") },
+        text = { Text("Pilih sumber proyek. Folder dibaca dan diedit langsung lewat izin akses penyimpanan; ZIP diekstrak ke penyimpanan aplikasi.") },
         confirmButton = { TextButton(onClick = onFolder) { Text("Select Project Folder") } },
         dismissButton = { Row { TextButton(onClick = onZip) { Text("Import ZIP") }; TextButton(onClick = onClose) { Text("Batal") } } }
     )
